@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VintedBot — Alertes Jeux de Société</title>
+<link rel="shortcut icon" href="./img/icon.png" type="image/x-icon">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0d12; --bg2: #10151e; --bg3: #161d2a;
+    --border: #1e2d45; --teal: #00e5c0; --teal-dim: #00b599;
+    --teal-glow: rgba(0,229,192,0.15); --orange: #ff6b35;
+    --red: #ff3b5c; --yellow: #ffd166; --green: #06d6a0;
+    --text: #c8d8e8; --text-dim: #5a7090; --text-bright: #eaf4ff;
+    --mono: 'Share Tech Mono', monospace; --sans: 'Exo 2', sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  article,aside,details,figcaption,figure,div
+  footer,header,hgroup,menu,nav,section { 
+      display:block;
+  }
+  body {
+    background: var(--bg); color: var(--text); font-family: var(--sans); min-height: 100vh;
+    background-image:
+      radial-gradient(ellipse 80% 40% at 50% -10%, rgba(0,229,192,0.07) 0%, transparent 70%),
+      repeating-linear-gradient(0deg, transparent, transparent 39px, rgba(255,255,255,0.02) 39px, rgba(255,255,255,0.02) 40px),
+      repeating-linear-gradient(90deg, transparent, transparent 39px, rgba(255,255,255,0.01) 39px, rgba(255,255,255,0.01) 40px);
+  }
+
+  /* ── BANNERS ── */
+  .banner {
+    padding: 12px 32px; font-family: var(--mono); font-size: 12px;
+    display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--border); transition: all 0.3s;
+  }
+  .banner.ok       { background: rgba(6,214,160,0.08);  color: var(--green);  border-color: rgba(6,214,160,0.2); }
+  .banner.ko       { background: rgba(255,59,92,0.08);  color: var(--red);    border-color: rgba(255,59,92,0.2); }
+  .banner.warn     { background: rgba(255,209,102,0.07);color: var(--yellow); border-color: rgba(255,209,102,0.2); }
+  .banner.checking { background: rgba(255,209,102,0.06);color: var(--yellow); }
+  .bdot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+  .banner.ok .bdot { box-shadow: 0 0 6px currentColor; animation: blink 2s ease-in-out infinite; }
+  @keyframes blink { 0%,100%{opacity:1}50%{opacity:0.4} }
+  .banner-btn { margin-left:auto; background:none; border:1px solid currentColor; color:inherit; padding:3px 10px; border-radius:4px; font-family:var(--mono); font-size:11px; cursor:pointer; white-space:nowrap; }
+
+  /* ── COOKIE PANEL ── */
+  #cookiePanel {
+    display: none;
+    background: rgba(255,209,102,0.05); border-bottom: 1px solid rgba(255,209,102,0.2);
+    padding: 16px 24px; font-family: var(--mono); font-size: 12px; color: var(--text-dim); line-height: 2;
+  }
+  #cookiePanel.visible { display: block; }
+  #cookiePanel ol { padding-left: 20px; margin: 8px 0 12px; }
+  #cookiePanel code { background: var(--bg3); padding: 1px 6px; border-radius: 3px; color: var(--teal); }
+  #cookiePanel a { background: var(--bg3); padding: 1px 6px; border-radius: 3px; color: var(--teal); }
+  .cookie-input-row { display: flex; gap: 8px; margin-top: 8px; }
+  .cookie-input-row input {
+    flex: 1; background: var(--bg); border: 1px solid rgba(255,209,102,0.3);
+    border-radius: 6px; padding: 8px 12px; color: var(--text-bright);
+    font-family: var(--mono); font-size: 12px; outline: none;
+  }
+  .cookie-input-row input:focus { border-color: var(--yellow); box-shadow: 0 0 0 3px rgba(255,209,102,0.1); }
+  .cookie-input-row button {
+    background: var(--yellow); color: #0a0d12; border: none; border-radius: 6px;
+    padding: 8px 16px; font-family: var(--mono); font-size: 12px; cursor: pointer; font-weight: bold; white-space:nowrap;
+  }
+  .cookie-input-row button:hover { background: #ffe066; }
+
+  /* ── HEADER ── */
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 32px; border-bottom: 1px solid var(--border);
+    background: rgba(10,13,18,0.9); backdrop-filter: blur(10px);
+    position: sticky; top: 0; z-index: 100;
+  }
+  .logo { display: flex; align-items: center; gap: 12px; }
+  .logo-icon { width: 64px;  object-fit: contain; }
+  .logo-text { font-family: var(--mono); font-size: 20px; color: var(--teal); letter-spacing: 2px; }
+  .logo-sub  { font-size: 11px; color: var(--text-dim); font-family: var(--mono); letter-spacing: 1px; margin-top: 2px; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); transition: all 0.3s; }
+  .status-dot.active { background: var(--teal); box-shadow: 0 0 8px var(--teal); animation: blink 1.5s ease-in-out infinite; }
+
+  /* ── LAYOUT ── */
+  main { max-width: 1300px; margin: 0 auto; padding: 16px 0; display: grid; grid-template-columns: 380px 1fr; gap: 16px; }
+  .panel { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .panel-header { padding: 14px 20px; background: var(--bg3); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 12px; color: var(--teal); letter-spacing: 1.5px; text-transform: uppercase; }
+  .panel-body { padding: 20px; }
+  .form-group { margin-bottom: 14px; }
+  label { display: block; font-size: 11px; color: var(--text-dim); font-family: var(--mono); letter-spacing: 1px; margin-bottom: 6px; text-transform: uppercase; }
+  input[type="text"], input[type="number"], select {
+    width: 100%; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 9px 12px; color: var(--text-bright);
+    font-family: var(--sans); font-size: 14px; transition: border-color 0.2s, box-shadow 0.2s; outline: none;
+  }
+  input:focus, select:focus { border-color: var(--teal-dim); box-shadow: 0 0 0 3px var(--teal-glow); }
+  select option { background: var(--bg2); }
+  .price-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .btn { padding: 10px 18px; border-radius: 6px; border: none; cursor: pointer; font-family: var(--sans); font-weight: 600; font-size: 13px; transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px; width: 100%; justify-content: center; }
+  .btn-primary { background: var(--teal); color: #0a0d12; }
+  .btn-primary:hover { background: #00ffda; box-shadow: 0 0 16px rgba(0,229,192,0.4); transform: translateY(-1px); }
+  .btn-ghost { background: var(--bg3); color: var(--teal); border: 1px solid var(--teal); }
+  .btn-ghost:hover { background: var(--teal-glow); }
+  .btn-danger { background: rgba(255,59,92,0.15); color: var(--red); border: 1px solid rgba(255,59,92,0.3); padding: 5px 10px; font-size: 12px; width: auto; }
+  .btn-danger:hover { background: rgba(255,59,92,0.25); }
+  .bot-controls { display: flex; flex-direction: column; gap: 12px; }
+  .controls-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .btn-bot { padding: 12px; border-radius: 8px; border: 2px solid; cursor: pointer; font-family: var(--mono); font-size: 13px; letter-spacing: 1px; transition: all 0.2s; text-align: center; width: 100%; background: none; }
+  .btn-start { border-color: var(--teal); color: var(--teal); background: var(--teal-glow) !important; }
+  .btn-start:hover { background: rgba(0,229,192,0.25) !important; }
+  .btn-stop  { border-color: var(--red); color: var(--red); background: rgba(255,59,92,0.08) !important; }
+  .btn-stop:hover  { background: rgba(255,59,92,0.18) !important; }
+  .alert-list { display: flex; flex-direction: column; gap: 8px; }
+  .alert-item { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; display: flex; align-items: center; gap: 10px; }
+  .alert-item.active-alert { border-color: rgba(0,229,192,0.3); }
+  .alert-toggle { width: 34px; height: 18px; border-radius: 9px; border: 1.5px solid var(--border); background: var(--bg2); cursor: pointer; position: relative; flex-shrink: 0; transition: all 0.2s; }
+  .alert-toggle::after { content: ''; position: absolute; width: 12px; height: 12px; border-radius: 50%; background: var(--text-dim); top: 2px; left: 2px; transition: all 0.2s; }
+  .alert-toggle.on { background: var(--teal-glow); border-color: var(--teal); }
+  .alert-toggle.on::after { background: var(--teal); left: 17px; box-shadow: 0 0 6px var(--teal); }
+  .alert-info { flex: 1; min-width: 0; }
+  .alert-name { font-size: 13px; color: var(--text-bright); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .alert-meta { font-size: 11px; color: var(--text-dim); font-family: var(--mono); margin-top: 2px; }
+  .alert-badge { font-size: 10px; font-family: var(--mono); padding: 2px 7px; border-radius: 4px; flex-shrink: 0; }
+  .badge-on  { background: var(--teal-glow); color: var(--teal); border: 1px solid rgba(0,229,192,0.3); }
+  .badge-off { background: rgba(255,255,255,0.04); color: var(--text-dim); border: 1px solid var(--border); }
+  .right-col { display: flex; flex-direction: column; gap: 16px; }
+  .results-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; background: var(--bg3); border-bottom: 1px solid var(--border); }
+  .results-title { font-family: var(--mono); font-size: 12px; color: var(--teal); letter-spacing: 1.5px; text-transform: uppercase; }
+  .results-count { font-family: var(--mono); font-size: 12px; color: var(--text-dim); }
+  .results-count span { color: var(--teal); }
+  .results-body { padding: 20px; }
+  .results-section { margin-bottom: 28px; }
+  .section-title { font-family: var(--mono); font-size: 11px; color: var(--text-dim); letter-spacing: 2px; text-transform: uppercase; margin-bottom: 14px; padding-bottom: 6px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
+  .section-title::before { content: ''; width: 3px; height: 12px; background: var(--teal); border-radius: 2px; display: inline-block; }
+  .cards-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+  .card { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; cursor: pointer; transition: all 0.2s; text-decoration: none; display: block; position: relative; }
+  .card:hover { border-color: var(--teal-dim); transform: translateY(-3px); box-shadow: 0 8px 24px rgba(0,0,0,0.4), 0 0 0 1px rgba(0,229,192,0.1); }
+  .card-img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; background: var(--bg3); }
+  .card-img-ph { width: 100%; aspect-ratio: 1; background: var(--bg3); display: flex; align-items: center; justify-content: center; font-size: 32px; color: var(--text-dim); }
+  .card-body { padding: 10px; }
+  .card-title { font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
+  .card-price { font-family: var(--mono); font-size: 14px; color: var(--teal); font-weight: bold; }
+  .card-location { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
+  .card-new-badge { position: absolute; top: 8px; right: 8px; background: var(--orange); color: #fff; font-family: var(--mono); font-size: 9px; padding: 2px 5px; border-radius: 3px; letter-spacing: 1px; }
+  .empty-state { text-align: center; padding: 60px 20px; color: var(--text-dim); }
+  .empty-icon { font-size: 48px; margin-bottom: 16px; opacity: 0.4; }
+  .empty-text { font-size: 14px; line-height: 1.6; }
+  .log-panel { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .log-body { padding: 12px 16px; font-family: var(--mono); font-size: 11px; max-height: 120px; overflow-y: auto; display: flex; flex-direction: column-reverse; gap: 3px; }
+  .log-line { color: var(--text-dim); }
+  .log-line.info  { color: var(--teal); }
+  .log-line.warn  { color: var(--yellow); }
+  .log-line.error { color: var(--red); }
+  ::-webkit-scrollbar { width: 5px; } ::-webkit-scrollbar-track { background: var(--bg); } ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  .next-scan { font-family: var(--mono); font-size: 12px; color: var(--text-dim); text-align: center; padding: 8px; }
+  .next-scan span { color: var(--yellow); }
+  .divider { height: 1px; background: var(--border); margin: 16px 0; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<!-- Proxy banner -->
+<div id="proxyBanner" class="banner checking">
+  <div class="bdot"></div>
+  <span id="proxyMsg">Connexion à l'API…</span>
+  <button class="banner-btn" onclick="checkProxy()">↻ Re-tester</button>
+</div>
+
+<!-- Cookie banner (affiché si proxy OK mais pas de cookie) -->
+<div id="cookieBanner" class="banner warn" style="display:none">
+  <div class="bdot"></div>
+  <span>Cookie de session Vinted requis pour accéder à l'API</span>
+  <button class="banner-btn" onclick="toggleCookiePanel()">🔑 Configurer le cookie</button>
+</div>
+
+<!-- Cookie panel -->
+<div id="cookiePanel">
+  <strong style="color:var(--yellow)">🔑 Configuration du cookie de session Vinted</strong><br>
+  Vinted exige un cookie valide issu de ton navigateur. Voici comment le récupérer :
+  <ol>
+    <li>Ouvre <a href="https://www.vinted.fr" target="_blank">https://www.vinted.fr</a> et connecte-toi</li>
+    <li>Appuie sur <code>F12</code> → onglet <strong>Réseau</strong> (Network)</li>
+    <li>Dans le champ <strong>filtre</strong> (filter), tape : <code>catalog/items</code></li>
+    <li>Sur Vinted, lance une recherche (ex: "7 Wonders") → Tu dois voir apparaître une requête dans l'onglet <strong>Réseau</strong></li>
+    <li>Clique sur cette requête → onglet <strong>En-têtes</strong> (Headers)</li>
+    <li>Dans <strong>En-têtes de requête</strong> (Request Headers), copie la valeur complète du champ <code>Cookie</code> (très longue chaîne)
+    <li>Et colle-la dans l'input en dessous 👍</li>
+  </ol>
+  <div class="cookie-input-row">
+    <input type="text" id="cookieInput" placeholder="Colle la valeur du cookie de l'en-tête ici" />
+    <button onclick="saveCookie()">✓ Enregistrer</button>
+  </div>
+  <div style="margin-top:8px;font-size:11px;color:var(--text-dim)">⚠ Le cookie peut expirer, si l'erreur revient, répète l'opération.</div>
+</div>
+
+<header>
+  <div class="logo">
+    <img class="logo-icon" src="./img/logo.png" alt="">
+    <div>
+      <div class="logo-text">VINTEDBOT</div>
+      <div class="logo-sub">Surveillance d'annonces</div>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px;">
+    <div class="status-dot" id="statusDot"></div>
+    <span id="statusText" style="font-family:var(--mono);font-size:12px;color:var(--text-dim)">INACTIF</span>
+  </div>
+</header>
+
+<main>
+  <div style="display:flex;flex-direction:column;gap:16px;">
+
+    <div class="panel">
+      <div class="panel-header">＋ Nouvelle alerte</div>
+      <div class="panel-body">
+        <div class="form-group">
+          <label>Mots-clés</label>
+          <input type="text" id="inputKeywords" placeholder="ex: Time Bomb, 7 Wonders, Hanabi…" onkeydown="if(event.key==='Enter')addAlert()" />
+        </div>
+        <div class="form-group">
+          <label>Fourchette de prix (€)</label>
+          <div class="price-row">
+            <input type="number" id="inputPriceMin" placeholder="Min" min="0" />
+            <input type="number" id="inputPriceMax" placeholder="Max" min="0" />
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="addAlert()">＋ Ajouter l'alerte</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">🔔 Alertes configurées</div>
+      <div class="panel-body">
+        <div class="alert-list" id="alertList">
+          <div style="text-align:center;color:var(--text-dim);font-size:13px;padding:20px 0;">Aucune alerte configurée</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">⚙ Paramètres du bot</div>
+      <div class="panel-body bot-controls">
+        <div class="form-group">
+          <label>Intervalle de vérification</label>
+          <select id="selectInterval">
+            <option value="60000">Toutes les 1 minute</option>
+            <option value="120000" selected>Toutes les 2 minutes</option>
+            <option value="300000">Toutes les 5 minutes</option>
+            <option value="600000">Toutes les 10 minutes</option>
+            <option value="1800000">Toutes les 30 minutes</option>
+          </select>
+        </div>
+        <div class="form-group" style="display: none;">
+          <label>Période des annonces</label>
+          <select id="selectPeriod">
+            <option value="86400">Dernières 24h</option>
+            <option value="172800">Dernières 48h</option>
+            <option value="0" selected>Toutes les annonces</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Résultats max par alerte</label>
+          <input type="number" id="inputPerPage" placeholder="15 par défaut" min="1" max="100" />
+        </div>
+        <div class="divider"></div>
+        <div class="controls-row">
+          <button class="btn-bot btn-start" id="btnStart" onclick="startBot()">▶ DÉMARRER</button>
+          <button class="btn-bot btn-stop"  id="btnStop"  onclick="stopBot()"  style="display:none">■ ARRÊTER</button>
+          <div class="next-scan" id="nextScanTimer" style="display:none">
+            Prochain scan dans <span id="countdown">--:--</span>
+          </div>
+        </div>
+        <button class="btn btn-ghost" onclick="runNow()">⟳ Scanner maintenant</button>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="right-col">
+    <div class="log-panel">
+      <div class="panel-header">📋 Logs</div>
+      <div class="log-body" id="logBody">
+        <div class="log-line">Système prêt. Configure tes alertes et démarre le bot.</div>
+      </div>
+    </div>
+    <div class="panel" style="flex:1">
+      <div class="results-header">
+        <div class="results-title">🎯 Résultats</div>
+        <div class="results-count">Total : <span id="totalCount">0</span> annonces</div>
+      </div>
+      <div class="results-body" id="resultsBody">
+        <div class="empty-state">
+          <div class="empty-icon">🔍</div>
+          <div class="empty-text">Lance le proxy, configure tes alertes, puis démarre le bot.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+const PROXY = '/api';
+let alerts = [], botRunning = false, botInterval = null, countdownInterval = null, nextScanTime = null;
+let resultsData = {}, proxyOk = false, cookieOk = false;
+
+// ── COOKIE (localStorage) ─────────────────────────────────────────────────────
+const LS_COOKIE_KEY = 'bot-vinted-cookie';
+function getCookie()       { return localStorage.getItem(LS_COOKIE_KEY) || ''; }
+function setCookieLocal(v) { localStorage.setItem(LS_COOKIE_KEY, v); }
+
+// ── PROXY & COOKIE CHECK ──────────────────────────────────────────────────────
+async function checkProxy() {
+  setBanner('proxyBanner', 'checking', `Connexion à l'API…`);
+  try {
+    const res = await fetch(`${PROXY}/ping`, { signal: AbortSignal.timeout(5000) });
+    if (res.ok) {
+      proxyOk = true;
+      setBanner('proxyBanner', 'ok', '✓ API connectée');
+      log('✓ API opérationnelle', 'info');
+      cookieOk = !!getCookie();
+      if (!cookieOk) {
+        document.getElementById('cookieBanner').style.display = 'flex';
+        log('⚠ Aucun cookie de session — clique sur "Configurer le cookie"', 'warn');
+      } else {
+        document.getElementById('cookieBanner').style.display = 'none';
+        document.getElementById('cookiePanel').classList.remove('visible');
+        log('✓ Cookie de session présent', 'info');
+      }
+    } else throw new Error();
+  } catch {
+    proxyOk = false;
+    setBanner('proxyBanner', 'ko', '✗ API non joignable');
+    log('✗ API non joignable.', 'error');
+  }
+}
+
+function setBanner(id, cls, msg) {
+  const b = document.getElementById(id);
+  b.className = `banner ${cls}`;
+  b.querySelector('span').textContent = msg;
+}
+
+function toggleCookiePanel() {
+  document.getElementById('cookiePanel').classList.toggle('visible');
+}
+
+function saveCookie() {
+  const val = document.getElementById('cookieInput').value.trim();
+  if (!val) { log('⚠ Colle la valeur du cookie avant de sauvegarder', 'warn'); return; }
+  setCookieLocal(val);
+  cookieOk = true;
+  document.getElementById('cookiePanel').classList.remove('visible');
+  document.getElementById('cookieBanner').style.display = 'none';
+  log('✓ Cookie de session enregistré (mémoire locale)', 'info');
+}
+
+// ── LOCALSTORAGE ─────────────────────────────────────────────────────────────
+const LS_KEY = 'bot-vinted-alertes';
+function saveAlerts() {
+  try { localStorage.setItem(LS_KEY, JSON.stringify(alerts)); } catch(e) { log('⚠ Impossible de sauvegarder les alertes localement', 'warn'); }
+}
+function loadAlerts() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length) {
+        alerts = parsed;
+        log(`✓ ${alerts.length} alerte(s) restaurée(s) depuis la mémoire locale`, 'info');
+      }
+    }
+  } catch(e) { log('⚠ Erreur lors de la restauration des alertes', 'warn'); }
+}
+
+// ── ALERTS ───────────────────────────────────────────────────────────────────
+function addAlert() {
+  const kw = document.getElementById('inputKeywords').value.trim();
+  if (!kw) { log('⚠ Mots-clés requis', 'warn'); return; }
+  const a = {
+    id: Date.now(), keywords: kw,
+    priceMin: document.getElementById('inputPriceMin').value || '',
+    priceMax: document.getElementById('inputPriceMax').value || '',
+    enabled: true
+  };
+  alerts.push(a); saveAlerts(); renderAlerts();
+  document.getElementById('inputKeywords').value = '';
+  document.getElementById('inputPriceMin').value = '';
+  document.getElementById('inputPriceMax').value = '';
+  log(`✓ Alerte ajoutée : "${kw}"`, 'info');
+}
+function removeAlert(id)  { alerts = alerts.filter(a=>a.id!==id); delete resultsData[id]; saveAlerts(); renderAlerts(); renderResults(); log('Alerte supprimée','warn'); }
+function toggleAlert(id)  { const a=alerts.find(a=>a.id===id); if(a){ a.enabled=!a.enabled; if(!a.enabled){ delete resultsData[id]; renderResults(); } saveAlerts(); renderAlerts(); } }
+function renderAlerts() {
+  const list = document.getElementById('alertList');
+  if (!alerts.length) { list.innerHTML='<div style="text-align:center;color:var(--text-dim);font-size:13px;padding:20px 0;">Aucune alerte configurée</div>'; return; }
+  list.innerHTML = alerts.map(a=>`
+    <div class="alert-item ${a.enabled?'active-alert':''}">
+      <div class="alert-toggle ${a.enabled?'on':''}" onclick="toggleAlert(${a.id})"></div>
+      <div class="alert-info">
+        <div class="alert-name" title="${esc(a.keywords)}">${esc(a.keywords)}</div>
+        <div class="alert-meta">${a.priceMin?a.priceMin+'€':'0€'} – ${a.priceMax?a.priceMax+'€':'∞'}</div>
+      </div>
+      <span class="alert-badge ${a.enabled?'badge-on':'badge-off'}">${a.enabled?'ON':'OFF'}</span>
+      <button class="btn btn-danger" onclick="removeAlert(${a.id})">✕</button>
+    </div>`).join('');
+}
+
+// ── BOT ──────────────────────────────────────────────────────────────────────
+function startBot() {
+  if (!proxyOk)  { log('✗ Proxy non disponible','error'); return; }
+  if (!cookieOk) { log('⚠ Cookie de session requis — clique sur "Configurer le cookie"','warn'); toggleCookiePanel(); return; }
+  if (!alerts.filter(a=>a.enabled).length) { log('⚠ Aucune alerte active','warn'); return; }
+  botRunning = true;
+  document.getElementById('btnStart').style.display = 'none';
+  document.getElementById('btnStop').style.display  = 'block';
+  document.getElementById('statusDot').classList.add('active');
+  document.getElementById('statusText').textContent = 'ACTIF';
+  document.getElementById('statusText').style.color = 'var(--teal)';
+  document.getElementById('nextScanTimer').style.display = 'block';
+  log('▶ Bot démarré','info'); runScan(); scheduleNext();
+}
+function stopBot() {
+  botRunning = false; clearInterval(botInterval); clearInterval(countdownInterval);
+  document.getElementById('btnStart').style.display = 'block';
+  document.getElementById('btnStop').style.display  = 'none';
+  document.getElementById('statusDot').classList.remove('active');
+  document.getElementById('statusText').textContent = 'INACTIF';
+  document.getElementById('statusText').style.color = 'var(--text-dim)';
+  document.getElementById('nextScanTimer').style.display = 'none';
+  log('■ Bot arrêté','warn');
+}
+function runNow() {
+  if (!proxyOk)  { log('✗ Proxy non disponible','error'); return; }
+  if (!cookieOk) { log('⚠ Cookie requis','warn'); toggleCookiePanel(); return; }
+  if (!alerts.filter(a=>a.enabled).length) { log('⚠ Aucune alerte active','warn'); return; }
+  runScan(); if (botRunning) scheduleNext();
+}
+function scheduleNext() {
+  clearInterval(botInterval); clearInterval(countdownInterval);
+  const interval = parseInt(document.getElementById('selectInterval').value);
+  nextScanTime = Date.now() + interval;
+  updateCountdown(); countdownInterval = setInterval(updateCountdown, 1000);
+  botInterval = setInterval(()=>{ runScan(); nextScanTime=Date.now()+interval; }, interval);
+}
+function updateCountdown() {
+  if (!nextScanTime) return;
+  const rem = Math.max(0, nextScanTime - Date.now());
+  document.getElementById('countdown').textContent =
+    `${String(Math.floor(rem/60000)).padStart(2,'0')}:${String(Math.floor((rem%60000)/1000)).padStart(2,'0')}`;
+}
+async function runScan() {
+  const active = alerts.filter(a=>a.enabled);
+  if (!active.length) return;
+  log(`⟳ Scan de ${active.length} alerte(s)…`, 'info');
+  for (const a of active) await fetchAlert(a);
+  renderResults(); log('✓ Scan terminé', 'info');
+}
+
+// ── FETCH ────────────────────────────────────────────────────────────────────
+async function fetchAlert(alert) {
+  const period = parseInt(document.getElementById('selectPeriod').value);
+  const params = new URLSearchParams({
+    search_text: alert.keywords,
+    price_from: alert.priceMin||'',
+    price_to: alert.priceMax||'',
+    per_page: parseInt(document.getElementById('inputPerPage').value) || 15,
+    order: 'newest_first',
+    cookie: getCookie()
+  });
+  log(`🔎 "${alert.keywords}"…`);
+  try {
+    const res = await fetch(`${PROXY}/vinted?${params}`, { signal: AbortSignal.timeout(15000) });
+    const json = await res.json();
+
+    if (!res.ok) {
+      const hint = json.hint || json.error || `HTTP ${res.status}`;
+      log(`✗ "${alert.keywords}": ${hint}`, 'error');
+      if (res.status === 403 || res.status === 401 || res.status === 500) {
+        cookieOk = false;
+        document.getElementById('cookieBanner').style.display = 'flex';
+        log('⚠ Cookie expiré — mets-le à jour via "Configurer le cookie"', 'warn');
+      }
+      return;
+    }
+
+    let items = json.items || [];
+    if (period > 0) {
+      const cutoff = Date.now()/1000 - period;
+      items = items.filter(i => {
+        console.log('=== item');
+        console.log(i.created_at);
+        console.log(i);
+        
+        let ts = 0;
+        if (i.created_at_ts && i.created_at_ts > 0) {
+          ts = i.created_at_ts;
+        } else if (i.created_at) {
+          const parsed = Date.parse(i.created_at);
+          if (!isNaN(parsed)) ts = parsed / 1000;
+        }
+        return ts > 0 && ts >= cutoff;
+      });
+    }
+
+    const existing = (resultsData[alert.id]||[]).map(i=>i.id);
+    items = items.map(i=>({...i, _isNew: !existing.includes(i.id)}));
+    const nw = items.filter(i=>i._isNew).length;
+    if (nw) log(`🆕 ${nw} nouvelle(s) annonces pour "${alert.keywords}"`, 'info');
+    resultsData[alert.id] = items;
+  } catch(err) {
+    log(`✗ "${alert.keywords}": ${err.message}`, 'error');
+  }
+}
+
+// ── RESULTS ──────────────────────────────────────────────────────────────────
+function renderResults() {
+  const body  = document.getElementById('resultsBody');
+  const total = Object.values(resultsData).flat().length;
+  document.getElementById('totalCount').textContent = total;
+  if (!total) {
+    body.innerHTML = '<div class="empty-state"><div class="empty-icon">📭</div><div class="empty-text">Aucun résultat trouvé.</div></div>';
+    return;
+  }
+  let html = '';
+  for (const a of alerts) {
+    const items = resultsData[a.id];
+    if (!items||!items.length) continue;
+    html += `<div class="results-section">
+      <div class="section-title">${esc(a.keywords)} <span style="font-size:10px;">(${items.length} résultat${items.length>1?'s':''})</span></div>
+      <div class="cards-grid">${items.map(cardHTML).join('')}</div>
+    </div>`;
+  }
+  body.innerHTML = html || '<div class="empty-state"><div class="empty-icon">📭</div><div class="empty-text">Aucun résultat.</div></div>';
+}
+function cardHTML(item) {
+  const price = item.price.amount ? `${item.price.amount} ${item.currency||'€'}` : '—';
+  const img   = item.photo?.url || item.photos?.[0]?.url || '';
+  const url   = item.url || `https://www.vinted.fr/items/${item.id}`;
+  const title = esc(item.title||'Sans titre');
+  const city  = esc(item.user?.city||item.city||'');
+  return `<a class="card" href="${url}" target="_blank" rel="noopener">
+    ${img?`<img class="card-img" src="${img}" alt="${title}" loading="lazy">`:`<div class="card-img-ph">🎲</div>`}
+    <div class="card-body">
+      <div class="card-title" title="${title}">${title}</div>
+      <div class="card-price">${price}</div>
+      ${city?`<div class="card-location">📍 ${city}</div>`:''}
+    </div>
+  </a>`;
+}
+
+// ── LOG ──────────────────────────────────────────────────────────────────────
+function log(msg, type='') {
+  const body = document.getElementById('logBody');
+  const el = document.createElement('div'); el.className=`log-line ${type}`;
+  el.textContent = `[${new Date().toLocaleTimeString('fr-FR')}] ${msg}`;
+  body.prepend(el); while(body.children.length>50) body.removeChild(body.lastChild);
+}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+// Init
+loadAlerts(); checkProxy(); renderAlerts();
+</script>
+</body>
+</html>
