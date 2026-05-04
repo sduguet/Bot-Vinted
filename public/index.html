@@ -531,6 +531,14 @@ async function fetchAlert(alert) {
         cookieOk = false;
         document.getElementById('cookieBanner').style.display = 'flex';
         log('⚠ Cookie expiré — mets-le à jour via "Configurer le cookie"', 'warn');
+        if ('Notification' in window && Notification.permission === 'granted') {
+          const n = new Notification('⚠️ VintedBot — Cookie expiré', {
+            body: 'Ton cookie de session a expiré. Ouvre l\'app pour le mettre à jour.',
+            icon: './img/logo.png',
+            tag: 'vinted-cookie-expired',
+          });
+          n.onclick = () => { window.focus(); n.close(); };
+        }
       }
       return;
     }
