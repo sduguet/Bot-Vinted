@@ -301,6 +301,7 @@
 const PROXY = '/api';
 let alerts = [], botRunning = false, botInterval = null, countdownInterval = null, nextScanTime = null;
 let resultsData = {}, proxyOk = false, cookieOk = false;
+let firstItemIds = {};
 
 // ── COOKIE (localStorage) ─────────────────────────────────────────────────────
 const LS_COOKIE_KEY = 'bot-vinted-cookie';
@@ -315,6 +316,9 @@ async function checkProxy() {
     if (res.ok) {
       proxyOk = true;
       setBanner('proxyBanner', 'ok', '✓ API connectée');
+      if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
+      }
       log('✓ API opérationnelle', 'info');
       cookieOk = !!getCookie();
       if (!cookieOk) {
@@ -387,7 +391,15 @@ function addAlert() {
   document.getElementById('inputPriceMax').value = '';
   log(`✓ Alerte ajoutée : "${kw}"`, 'info');
 }
-function removeAlert(id)  { alerts = alerts.filter(a=>a.id!==id); delete resultsData[id]; saveAlerts(); renderAlerts(); renderResults(); log('Alerte supprimée','warn'); }
+function removeAlert(id)  { 
+  alerts = alerts.filter(a=>a.id!==id); 
+  delete resultsData[id]; 
+  delete firstItemIds[id]; // Nettoyage
+  saveAlerts(); 
+  renderAlerts(); 
+  renderResults(); 
+  log('Alerte supprimée','warn'); 
+}
 function toggleAlert(id)  { const a=alerts.find(a=>a.id===id); if(a){ a.enabled=!a.enabled; if(!a.enabled){ delete resultsData[id]; renderResults(); } saveAlerts(); renderAlerts(); } }
 function renderAlerts() {
   const list = document.getElementById('alertList');
@@ -486,10 +498,6 @@ async function fetchAlert(alert) {
     if (period > 0) {
       const cutoff = Date.now()/1000 - period;
       items = items.filter(i => {
-        console.log('=== item');
-        console.log(i.created_at);
-        console.log(i);
-        
         let ts = 0;
         if (i.created_at_ts && i.created_at_ts > 0) {
           ts = i.created_at_ts;
@@ -505,10 +513,35 @@ async function fetchAlert(alert) {
     items = items.map(i=>({...i, _isNew: !existing.includes(i.id)}));
     const nw = items.filter(i=>i._isNew).length;
     if (nw) log(`🆕 ${nw} nouvelle(s) annonces pour "${alert.keywords}"`, 'info');
+
+    // Notification OS si le 1er article a changé depuis le dernier scan
+    if (items.length > 0) {
+      const topId = items[0].id;
+      const prevId = firstItemIds[alert.id];
+      if (prevId !== undefined && prevId !== topId) {
+        notify(alert.keywords, items[0]);
+      }
+      firstItemIds[alert.id] = topId;
+    }
+
     resultsData[alert.id] = items;
   } catch(err) {
     log(`✗ "${alert.keywords}": ${err.message}`, 'error');
   }
+}
+
+// ── NOTIFICATIONS OS ──────────────────────────────────────────────────────────
+function notify(keyword, item) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const price = item.price?.amount ? `${item.price.amount} ${item.currency || '€'}` : '';
+  const title = `🛒 Nouveau sur Vinted — ${keyword}`;
+  const body  = [item.title, price].filter(Boolean).join(' · ');
+  const icon  = item.photos?.[0]?.url || item.photo?.url || './img/logo.png';
+  const notif = new Notification(title, { body, icon });
+  notif.onclick = () => {
+    window.open(item.url || `https://www.vinted.fr/items/${item.id}`, '_blank');
+    notif.close();
+  };
 }
 
 // ── RESULTS ──────────────────────────────────────────────────────────────────
@@ -531,8 +564,9 @@ function renderResults() {
   }
   body.innerHTML = html || '<div class="empty-state"><div class="empty-icon">📭</div><div class="empty-text">Aucun résultat.</div></div>';
 }
+
 function cardHTML(item) {
-  const price = item.price.amount ? `${item.price.amount} ${item.currency||'€'}` : '—';
+  const price = item.price?.amount ? `${item.price.amount} ${item.currency||'€'}` : '—';
   const img   = item.photo?.url || item.photos?.[0]?.url || '';
   const url   = item.url || `https://www.vinted.fr/items/${item.id}`;
   const title = esc(item.title||'Sans titre');
