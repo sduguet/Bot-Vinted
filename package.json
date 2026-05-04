@@ -1,6 +1,6 @@
 {
   "name": "vintedbot",
   "version": "1.0.0",
-  "description": "VintedBot — Alertes Jeux de Société",
-  "engines": { "node": "18.x" }
+  "description": "VintedBot — Alertes ",
+  "engines": { "node": "24.x" }
 }
