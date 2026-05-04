@@ -301,7 +301,33 @@
 const PROXY = '/api';
 let alerts = [], botRunning = false, botInterval = null, countdownInterval = null, nextScanTime = null;
 let resultsData = {}, proxyOk = false, cookieOk = false;
-let firstItemIds = {};
+let lastTopItems = {};
+
+// ── NOTIFICATIONS ─────────────────────────────────────────────────────────────
+async function requestNotifPermission() {
+  if (!('Notification' in window)) return false;
+  if (Notification.permission === 'granted') return true;
+  if (Notification.permission === 'denied') return false;
+  const perm = await Notification.requestPermission();
+  return perm === 'granted';
+}
+
+function sendDesktopNotif(alert, item) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const price = item.price?.amount ? `${item.price.amount} ${item.currency || '€'}` : '';
+  const img   = item.photo?.url || item.photos?.[0]?.url || '';
+  const url   = item.url || `https://www.vinted.fr/items/${item.id}`;
+  const title = item.title || 'Nouvelle annonce';
+
+  const notif = new Notification(`🛍 Nouvel article — ${alert.keywords}`, {
+    body: `${title}${price ? ' · ' + price : ''}`,
+    icon: img || './img/icon.png',
+    badge: './img/icon.png',
+    tag: `vinted-${alert.id}`,
+    renotify: true,
+  });
+  notif.onclick = () => { window.open(url, '_blank'); notif.close(); };
+}
 
 // ── COOKIE (localStorage) ─────────────────────────────────────────────────────
 const LS_COOKIE_KEY = 'bot-vinted-cookie';
@@ -316,9 +342,6 @@ async function checkProxy() {
     if (res.ok) {
       proxyOk = true;
       setBanner('proxyBanner', 'ok', '✓ API connectée');
-      if ('Notification' in window && Notification.permission === 'default') {
-        Notification.requestPermission();
-      }
       log('✓ API opérationnelle', 'info');
       cookieOk = !!getCookie();
       if (!cookieOk) {
@@ -391,16 +414,8 @@ function addAlert() {
   document.getElementById('inputPriceMax').value = '';
   log(`✓ Alerte ajoutée : "${kw}"`, 'info');
 }
-function removeAlert(id)  { 
-  alerts = alerts.filter(a=>a.id!==id); 
-  delete resultsData[id]; 
-  delete firstItemIds[id]; // Nettoyage
-  saveAlerts(); 
-  renderAlerts(); 
-  renderResults(); 
-  log('Alerte supprimée','warn'); 
-}
-function toggleAlert(id)  { const a=alerts.find(a=>a.id===id); if(a){ a.enabled=!a.enabled; if(!a.enabled){ delete resultsData[id]; renderResults(); } saveAlerts(); renderAlerts(); } }
+function toggleAlert(id)  { const a=alerts.find(a=>a.id===id); if(a){ a.enabled=!a.enabled; if(!a.enabled){ delete resultsData[id]; delete lastTopItems[id]; renderResults(); } saveAlerts(); renderAlerts(); } }
+function removeAlert(id)  { alerts = alerts.filter(a=>a.id!==id); delete resultsData[id]; delete lastTopItems[id]; saveAlerts(); renderAlerts(); renderResults(); log('✕ Alerte supprimée','warn'); }
 function renderAlerts() {
   const list = document.getElementById('alertList');
   if (!alerts.length) { list.innerHTML='<div style="text-align:center;color:var(--text-dim);font-size:13px;padding:20px 0;">Aucune alerte configurée</div>'; return; }
@@ -428,7 +443,12 @@ function startBot() {
   document.getElementById('statusText').textContent = 'ACTIF';
   document.getElementById('statusText').style.color = 'var(--teal)';
   document.getElementById('nextScanTimer').style.display = 'block';
-  log('▶ Bot démarré','info'); runScan(); scheduleNext();
+  log('▶ Bot démarré','info');
+  requestNotifPermission().then(granted => {
+    if (granted) log('🔔 Notifications desktop activées', 'info');
+    else log('⚠ Notifications desktop refusées — autorise-les dans ton navigateur pour recevoir des alertes', 'warn');
+  });
+  runScan(); scheduleNext();
 }
 function stopBot() {
   botRunning = false; clearInterval(botInterval); clearInterval(countdownInterval);
@@ -514,34 +534,22 @@ async function fetchAlert(alert) {
     const nw = items.filter(i=>i._isNew).length;
     if (nw) log(`🆕 ${nw} nouvelle(s) annonces pour "${alert.keywords}"`, 'info');
 
-    // Notification OS si le 1er article a changé depuis le dernier scan
-    if (items.length > 0) {
-      const topId = items[0].id;
-      const prevId = firstItemIds[alert.id];
-      if (prevId !== undefined && prevId !== topId) {
-        notify(alert.keywords, items[0]);
-      }
-      firstItemIds[alert.id] = topId;
-    }
-
     resultsData[alert.id] = items;
+
+    // ── Détection du nouvel article en tête de liste ──
+    if (items.length > 0) {
+      const topItem = items[0];
+      const prev    = lastTopItems[alert.id];
+      if (prev && prev.id !== topItem.id) {
+        // Le premier article a changé → nouvelle annonce publiée
+        log(`🔔 Nouvel article détecté pour "${alert.keywords}" : ${topItem.title || topItem.id}`, 'info');
+        sendDesktopNotif(alert, topItem);
+      }
+      lastTopItems[alert.id] = { id: topItem.id, title: topItem.title, url: topItem.url || `https://www.vinted.fr/items/${topItem.id}` };
+    }
   } catch(err) {
     log(`✗ "${alert.keywords}": ${err.message}`, 'error');
   }
-}
-
-// ── NOTIFICATIONS OS ──────────────────────────────────────────────────────────
-function notify(keyword, item) {
-  if (!('Notification' in window) || Notification.permission !== 'granted') return;
-  const price = item.price?.amount ? `${item.price.amount} ${item.currency || '€'}` : '';
-  const title = `🛒 Nouveau sur Vinted — ${keyword}`;
-  const body  = [item.title, price].filter(Boolean).join(' · ');
-  const icon  = item.photos?.[0]?.url || item.photo?.url || './img/logo.png';
-  const notif = new Notification(title, { body, icon });
-  notif.onclick = () => {
-    window.open(item.url || `https://www.vinted.fr/items/${item.id}`, '_blank');
-    notif.close();
-  };
 }
 
 // ── RESULTS ──────────────────────────────────────────────────────────────────
