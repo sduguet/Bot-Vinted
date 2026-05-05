@@ -455,20 +455,40 @@ async function fetchAlert(alert) {
     }
 
     let items = json.items || [];
+
+    // ── Extraire le timestamp de publication depuis l'URL de la photo ──
+    // L'API Vinted ne retourne pas de champ date. Le seul indicateur fiable
+    // est le timestamp Unix présent dans l'URL des photos (ex: /1777970750.webp)
+    items = items.map(i => {
+      let _publishedAt = 0;
+
+      // Chercher dans photo.high_resolution.timestamp (le plus direct)
+      if (i.photo?.high_resolution?.timestamp > 0) {
+        _publishedAt = i.photo.high_resolution.timestamp * 1000;
+      }
+      // Fallback : extraire depuis l'URL de la photo principale
+      else if (i.photo?.url) {
+        const m = i.photo.url.match(/\/(\d{9,10})\.webp/);
+        if (m) _publishedAt = parseInt(m[1]) * 1000;
+      }
+      // Fallback : première photo du tableau photos[]
+      else if (i.photos?.[0]?.high_resolution?.timestamp > 0) {
+        _publishedAt = i.photos[0].high_resolution.timestamp * 1000;
+      }
+      else if (i.photos?.[0]?.url) {
+        const m = i.photos[0].url.match(/\/(\d{9,10})\.webp/);
+        if (m) _publishedAt = parseInt(m[1]) * 1000;
+      }
+
+      return { ...i, _publishedAt };
+    });
+
     if (period > 0) {
-      const cutoff = Date.now()/1000 - period;
-      items = items.filter(i => {
-        let ts = 0;
-        if (i.created_at_ts && i.created_at_ts > 0) {
-          ts = i.created_at_ts;
-        } else if (i.created_at) {
-          const parsed = Date.parse(i.created_at);
-          if (!isNaN(parsed)) ts = parsed / 1000;
-        }
-        return ts > 0 && ts >= cutoff;
-      });
+      const cutoff = Date.now() - period * 1000;
+      items = items.filter(i => i._publishedAt > 0 && i._publishedAt >= cutoff);
     }
 
+    const isFirstScan = !resultsData[alert.id];
     const existingMap = {};
     (resultsData[alert.id] || []).forEach(i => existingMap[i.id] = i);
 
@@ -476,25 +496,32 @@ async function fetchAlert(alert) {
       const prev = existingMap[i.id];
       return {
         ...i,
-        _isNew: !prev,
-        _fetchedAt: prev ? prev._fetchedAt : Date.now()
+        // _isNew = false au 1er scan (on n'a rien à comparer) ; vrai seulement si absent du scan précédent
+        _isNew: !isFirstScan && !prev,
       };
     });
-    const nw = items.filter(i=>i._isNew).length;
+
+    const nw = items.filter(i => i._isNew).length;
     if (nw) log(`🆕 ${nw} nouvelle(s) annonce(s) pour "${alert.keywords}"`, 'info');
 
     resultsData[alert.id] = items;
 
-    // ── Détection du nouvel article en tête de liste ──
-    if (items.length > 0) {
-      const topItem = items[0];
-      const prev    = lastTopItems[alert.id];
-      if (prev && prev.id !== topItem.id) {
-        // Le premier article a changé → nouvelle annonce publiée
-        log(`🔔 Nouvel article détecté pour "${alert.keywords}" : ${topItem.title || topItem.id}`, 'info');
-        sendDesktopNotif(alert, topItem);
+    // ── Détection de nouveaux articles : on se base sur les IDs connus, pas sur items[0] ──
+    // Au 1er scan on mémorise juste les IDs sans notifier
+    if (isFirstScan) {
+      lastTopItems[alert.id] = new Set(items.map(i => i.id));
+    } else {
+      const knownIds = lastTopItems[alert.id] || new Set();
+      const newItems = items.filter(i => !knownIds.has(i.id));
+      if (newItems.length > 0) {
+        // Trier par date de publication pour notifier le plus récent
+        newItems.sort((a, b) => b._publishedAt - a._publishedAt);
+        const best = newItems[0];
+        log(`🔔 ${newItems.length} nouvel(s) article(s) pour "${alert.keywords}" : ${best.title || best.id}`, 'info');
+        sendDesktopNotif(alert, best);
       }
-      lastTopItems[alert.id] = { id: topItem.id, title: topItem.title, url: topItem.url || `https://www.vinted.fr/items/${topItem.id}` };
+      // Mettre à jour l'ensemble des IDs connus
+      lastTopItems[alert.id] = new Set(items.map(i => i.id));
     }
   } catch(err) {
     log(`✗ "${alert.keywords}": ${err.message}`, 'error');
@@ -519,11 +546,7 @@ function renderResults() {
       if (!items || !items.length) continue;
       items.forEach(i => allItems.push({ ...i, _alertKeywords: a.keywords }));
     }
-    allItems.sort((a, b) => {
-      const tsA = a._fetchedAt || (a.created_at_ts ? a.created_at_ts * 1000 : 0) || (a.created_at ? Date.parse(a.created_at) : 0);
-      const tsB = b._fetchedAt || (b.created_at_ts ? b.created_at_ts * 1000 : 0) || (b.created_at ? Date.parse(b.created_at) : 0);
-      return tsB - tsA;
-    });
+    allItems.sort((a, b) => b._publishedAt - a._publishedAt);
     body.innerHTML = `<div class="results-section">
       <div class="section-title">Flux chronologique <span style="font-size:10px;">(${allItems.length} article${allItems.length>1?'s':''})</span></div>
       <div class="cards-grid">${allItems.map(i => cardHTML(i, true)).join('')}</div>
