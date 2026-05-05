@@ -43,28 +43,7 @@
   @keyframes blink { 0%,100%{opacity:1}50%{opacity:0.4} }
   .banner-btn { margin-left:auto; background:none; border:1px solid currentColor; color:inherit; padding:3px 10px; border-radius:4px; font-family:var(--mono); font-size:11px; cursor:pointer; white-space:nowrap; }
 
-  /* ── COOKIE PANEL ── */
-  #cookiePanel {
-    display: none;
-    background: rgba(255,209,102,0.05); border-bottom: 1px solid rgba(255,209,102,0.2);
-    padding: 16px 24px; font-family: var(--mono); font-size: 12px; color: var(--text-dim); line-height: 2;
-  }
-  #cookiePanel.visible { display: block; }
-  #cookiePanel ol { padding-left: 20px; margin: 8px 0 12px; }
-  #cookiePanel code { background: var(--bg3); padding: 1px 6px; border-radius: 3px; color: var(--teal); }
-  #cookiePanel a { background: var(--bg3); padding: 1px 6px; border-radius: 3px; color: var(--teal); }
-  .cookie-input-row { display: flex; gap: 8px; margin-top: 8px; }
-  .cookie-input-row input {
-    flex: 1; background: var(--bg); border: 1px solid rgba(255,209,102,0.3);
-    border-radius: 6px; padding: 8px 12px; color: var(--text-bright);
-    font-family: var(--mono); font-size: 12px; outline: none;
-  }
-  .cookie-input-row input:focus { border-color: var(--yellow); box-shadow: 0 0 0 3px rgba(255,209,102,0.1); }
-  .cookie-input-row button {
-    background: var(--yellow); color: #0a0d12; border: none; border-radius: 6px;
-    padding: 8px 16px; font-family: var(--mono); font-size: 12px; cursor: pointer; font-weight: bold; white-space:nowrap;
-  }
-  .cookie-input-row button:hover { background: #ffe066; }
+
 
   /* ── HEADER ── */
   header {
@@ -172,32 +151,7 @@
   <button class="banner-btn" onclick="checkProxy()">↻ Re-tester</button>
 </div>
 
-<!-- Cookie banner (affiché si proxy OK mais pas de cookie) -->
-<div id="cookieBanner" class="banner warn" style="display:none">
-  <div class="bdot"></div>
-  <span>Cookie de session Vinted requis pour accéder à l'API</span>
-  <button class="banner-btn" onclick="toggleCookiePanel()">🔑 Configurer le cookie</button>
-</div>
 
-<!-- Cookie panel -->
-<div id="cookiePanel">
-  <strong style="color:var(--yellow)">🔑 Configuration du cookie de session Vinted</strong><br>
-  Vinted exige un cookie valide issu de ton navigateur. Voici comment le récupérer :
-  <ol>
-    <li>Ouvre <a href="https://www.vinted.fr" target="_blank">https://www.vinted.fr</a> et connecte-toi</li>
-    <li>Appuie sur <code>F12</code> → onglet <strong>Réseau</strong> (Network)</li>
-    <li>Dans le champ <strong>filtre</strong> (filter), tape : <code>catalog/items</code></li>
-    <li>Sur Vinted, lance une recherche (ex: "7 Wonders") → Tu dois voir apparaître une requête dans l'onglet <strong>Réseau</strong></li>
-    <li>Clique sur cette requête → onglet <strong>En-têtes</strong> (Headers)</li>
-    <li>Dans <strong>En-têtes de requête</strong> (Request Headers), copie la valeur complète du champ <code>Cookie</code> (très longue chaîne)
-    <li>Et colle-la dans l'input en dessous 👍</li>
-  </ol>
-  <div class="cookie-input-row">
-    <input type="text" id="cookieInput" placeholder="Colle la valeur du cookie de l'en-tête ici" />
-    <button onclick="saveCookie()">✓ Enregistrer</button>
-  </div>
-  <div style="margin-top:8px;font-size:11px;color:var(--text-dim)">⚠ Le cookie peut expirer, si l'erreur revient, répète l'opération.</div>
-</div>
 
 <header>
   <div class="logo">
@@ -312,7 +266,7 @@
 <script>
 const PROXY = '/api';
 let alerts = [], botRunning = false, botInterval = null, countdownInterval = null, nextScanTime = null;
-let resultsData = {}, proxyOk = false, cookieOk = false;
+let resultsData = {}, proxyOk = false;
 let lastTopItems = {}; // { alertId: { id, title, price, url, img } }
 let viewMode = 'alerts'; // 'alerts' | 'flux'
 
@@ -350,29 +304,15 @@ function sendDesktopNotif(alert, item) {
   notif.onclick = () => { window.open(url, '_blank'); notif.close(); };
 }
 
-// ── COOKIE (localStorage) ─────────────────────────────────────────────────────
-const LS_COOKIE_KEY = 'bot-vinted-cookie';
-function getCookie()       { return localStorage.getItem(LS_COOKIE_KEY) || ''; }
-function setCookieLocal(v) { localStorage.setItem(LS_COOKIE_KEY, v); }
-
-// ── PROXY & COOKIE CHECK ──────────────────────────────────────────────────────
+// ── PROXY CHECK ───────────────────────────────────────────────────────────────
 async function checkProxy() {
   setBanner('proxyBanner', 'checking', `Connexion à l'API…`);
   try {
     const res = await fetch(`${PROXY}/ping`, { signal: AbortSignal.timeout(5000) });
     if (res.ok) {
       proxyOk = true;
-      setBanner('proxyBanner', 'ok', '✓ API connectée');
+      setBanner('proxyBanner', 'ok', '✓ API connectée — cookie géré automatiquement');
       log('✓ API opérationnelle', 'info');
-      cookieOk = !!getCookie();
-      if (!cookieOk) {
-        document.getElementById('cookieBanner').style.display = 'flex';
-        log('⚠ Aucun cookie de session — clique sur "Configurer le cookie"', 'warn');
-      } else {
-        document.getElementById('cookieBanner').style.display = 'none';
-        document.getElementById('cookiePanel').classList.remove('visible');
-        log('✓ Cookie de session présent', 'info');
-      }
     } else throw new Error();
   } catch {
     proxyOk = false;
@@ -387,19 +327,6 @@ function setBanner(id, cls, msg) {
   b.querySelector('span').textContent = msg;
 }
 
-function toggleCookiePanel() {
-  document.getElementById('cookiePanel').classList.toggle('visible');
-}
-
-function saveCookie() {
-  const val = document.getElementById('cookieInput').value.trim();
-  if (!val) { log('⚠ Colle la valeur du cookie avant de sauvegarder', 'warn'); return; }
-  setCookieLocal(val);
-  cookieOk = true;
-  document.getElementById('cookiePanel').classList.remove('visible');
-  document.getElementById('cookieBanner').style.display = 'none';
-  log('✓ Cookie de session enregistré (mémoire locale)', 'info');
-}
 
 // ── LOCALSTORAGE ─────────────────────────────────────────────────────────────
 const LS_KEY = 'bot-vinted-alertes';
@@ -455,7 +382,6 @@ function renderAlerts() {
 // ── BOT ──────────────────────────────────────────────────────────────────────
 function startBot() {
   if (!proxyOk)  { log('✗ Proxy non disponible','error'); return; }
-  if (!cookieOk) { log('⚠ Cookie de session requis — clique sur "Configurer le cookie"','warn'); toggleCookiePanel(); return; }
   if (!alerts.filter(a=>a.enabled).length) { log('⚠ Aucune alerte active','warn'); return; }
   botRunning = true;
   document.getElementById('btnStart').style.display = 'none';
@@ -483,7 +409,6 @@ function stopBot() {
 }
 function runNow() {
   if (!proxyOk)  { log('✗ Proxy non disponible','error'); return; }
-  if (!cookieOk) { log('⚠ Cookie requis','warn'); toggleCookiePanel(); return; }
   if (!alerts.filter(a=>a.enabled).length) { log('⚠ Aucune alerte active','warn'); return; }
   runScan(); if (botRunning) scheduleNext();
 }
@@ -517,7 +442,6 @@ async function fetchAlert(alert) {
     price_to: alert.priceMax||'',
     per_page: parseInt(document.getElementById('inputPerPage').value) || 15,
     order: 'newest_first',
-    cookie: getCookie()
   });
   log(`🔎 "${alert.keywords}"…`);
   try {
@@ -527,19 +451,6 @@ async function fetchAlert(alert) {
     if (!res.ok) {
       const hint = json.hint || json.error || `HTTP ${res.status}`;
       log(`✗ "${alert.keywords}": ${hint}`, 'error');
-      if (res.status === 403 || res.status === 401 || res.status === 500) {
-        cookieOk = false;
-        document.getElementById('cookieBanner').style.display = 'flex';
-        log('⚠ Cookie expiré — mets-le à jour via "Configurer le cookie"', 'warn');
-        if ('Notification' in window && Notification.permission === 'granted') {
-          const n = new Notification('⚠️ VintedBot — Cookie expiré', {
-            body: 'Ton cookie de session a expiré. Ouvre l\'app pour le mettre à jour.',
-            icon: './img/logo.png',
-            tag: 'vinted-cookie-expired',
-          });
-          n.onclick = () => { window.focus(); n.close(); };
-        }
-      }
       return;
     }
 
