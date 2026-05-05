@@ -140,6 +140,29 @@
   .next-scan span { color: var(--yellow); }
   .divider { height: 1px; background: var(--border); margin: 16px 0; }
   @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+
+  /* ── COOKIE PANEL ── */
+  #cookiePanel {
+    display: none;
+    background: rgba(255,209,102,0.05); border-bottom: 1px solid rgba(255,209,102,0.2);
+    padding: 16px 24px; font-family: var(--mono); font-size: 12px; color: var(--text-dim); line-height: 2;
+  }
+  #cookiePanel.visible { display: block; }
+  #cookiePanel ol { padding-left: 20px; margin: 8px 0 12px; }
+  #cookiePanel code { background: var(--bg3); padding: 1px 6px; border-radius: 3px; color: var(--teal); }
+  #cookiePanel a { background: var(--bg3); padding: 1px 6px; border-radius: 3px; color: var(--teal); }
+  .cookie-input-row { display: flex; gap: 8px; margin-top: 8px; }
+  .cookie-input-row input {
+    flex: 1; background: var(--bg); border: 1px solid rgba(255,209,102,0.3);
+    border-radius: 6px; padding: 8px 12px; color: var(--text-bright);
+    font-family: var(--mono); font-size: 12px; outline: none;
+  }
+  .cookie-input-row input:focus { border-color: var(--yellow); box-shadow: 0 0 0 3px rgba(255,209,102,0.1); }
+  .cookie-input-row button {
+    background: var(--yellow); color: #0a0d12; border: none; border-radius: 6px;
+    padding: 8px 16px; font-family: var(--mono); font-size: 12px; cursor: pointer; font-weight: bold; white-space:nowrap;
+  }
+  .cookie-input-row button:hover { background: #ffe066; }
 </style>
 </head>
 <body>
@@ -149,6 +172,33 @@
   <div class="bdot"></div>
   <span id="proxyMsg">Connexion à l'API…</span>
   <button class="banner-btn" onclick="checkProxy()">↻ Re-tester</button>
+</div>
+
+<!-- Cookie warn banner (visible uniquement si cookie auto bloqué) -->
+<div id="cookieBanner" class="banner warn" style="display:none">
+  <div class="bdot"></div>
+  <span>Cookie automatique bloqué par Vinted — un cookie manuel est requis</span>
+  <button class="banner-btn" onclick="toggleCookiePanel()">🔑 Configurer le cookie</button>
+</div>
+
+<!-- Cookie panel -->
+<div id="cookiePanel">
+  <strong style="color:var(--yellow)">🔑 Cookie de session manuel</strong><br>
+  Le cookie automatique est bloqué (Datadome). Récupère-en un depuis ton navigateur :
+  <ol>
+    <li>Ouvre <a href="https://www.vinted.fr" target="_blank">https://www.vinted.fr</a> et connecte-toi</li>
+    <li>Appuie sur <code>F12</code> → onglet <strong>Réseau</strong> (Network)</li>
+    <li>Dans le champ <strong>filtre</strong> (filter), tape : <code>catalog/items</code></li>
+    <li>Sur Vinted, lance une recherche (ex: "7 Wonders") → Tu dois voir apparaître une requête dans l'onglet <strong>Réseau</strong></li>
+    <li>Clique sur cette requête → onglet <strong>En-têtes</strong> (Headers)</li>
+    <li>Dans <strong>En-têtes de requête</strong> (Request Headers), copie la valeur complète du champ <code>Cookie</code> (très longue chaîne)
+    <li>Et colle-la dans l'input en dessous 👍</li>
+  </ol>
+  <div class="cookie-input-row">
+    <input type="text" id="cookieInput" placeholder="Colle la valeur du cookie ici…" />
+    <button onclick="saveCookie()">✓ Enregistrer</button>
+  </div>
+  <div style="margin-top:8px;font-size:11px;color:var(--text-dim)">⚠ Le cookie expire après quelques heures — répète l'opération si l'erreur revient.</div>
 </div>
 
 
@@ -267,8 +317,12 @@
 const PROXY = '/api';
 let alerts = [], botRunning = false, botInterval = null, countdownInterval = null, nextScanTime = null;
 let resultsData = {}, proxyOk = false;
-let lastTopItems = {}; // { alertId: { id, title, price, url, img } }
-let viewMode = 'alerts'; // 'alerts' | 'flux'
+let lastTopItems = {};
+let viewMode = 'alerts';
+const LS_COOKIE_KEY = 'bot-vinted-cookie';
+function getManualCookie()    { return localStorage.getItem(LS_COOKIE_KEY) || ''; }
+function setManualCookie(v)   { localStorage.setItem(LS_COOKIE_KEY, v); }
+function clearManualCookie()  { localStorage.removeItem(LS_COOKIE_KEY); }
 
 // ── VIEW MODE ─────────────────────────────────────────────────────────────────
 function toggleViewMode() {
@@ -302,6 +356,20 @@ function sendDesktopNotif(alert, item) {
     renotify: true,
   });
   notif.onclick = () => { window.open(url, '_blank'); notif.close(); };
+}
+
+// ── COOKIE PANEL ──────────────────────────────────────────────────────────────
+function toggleCookiePanel() {
+  document.getElementById('cookiePanel').classList.toggle('visible');
+}
+
+function saveCookie() {
+  const val = document.getElementById('cookieInput').value.trim();
+  if (!val) { log('⚠ Colle la valeur du cookie avant de sauvegarder', 'warn'); return; }
+  setManualCookie(val);
+  document.getElementById('cookiePanel').classList.remove('visible');
+  document.getElementById('cookieBanner').style.display = 'none';
+  log('✓ Cookie manuel enregistré — relance le bot', 'info');
 }
 
 // ── PROXY CHECK ───────────────────────────────────────────────────────────────
@@ -443,14 +511,31 @@ async function fetchAlert(alert) {
     per_page: parseInt(document.getElementById('inputPerPage').value) || 15,
     order: 'newest_first',
   });
+
+  // Ajouter le cookie manuel s'il est présent (fallback si auto bloqué)
+  const manualCookie = getManualCookie();
+  if (manualCookie) params.set('cookie', manualCookie);
+
   log(`🔎 "${alert.keywords}"…`);
   try {
     const res = await fetch(`${PROXY}/vinted?${params}`, { signal: AbortSignal.timeout(15000) });
     const json = await res.json();
 
     if (!res.ok) {
-      const hint = json.hint || json.error || `HTTP ${res.status}`;
+      const hint = json.error || `HTTP ${res.status}`;
       log(`✗ "${alert.keywords}": ${hint}`, 'error');
+      // 401/403/503 → le cookie auto est bloqué, demander un cookie manuel
+      if ([401, 403, 503].includes(res.status)) {
+        document.getElementById('cookieBanner').style.display = 'flex';
+        log('⚠ Cookie automatique bloqué — configure un cookie manuel via le banner', 'warn');
+        if ('Notification' in window && Notification.permission === 'granted') {
+          const n = new Notification('⚠️ VintedBot — Action requise', {
+            body: 'Cookie Vinted bloqué. Ouvre l\'app pour le mettre à jour.',
+            tag: 'vinted-cookie-blocked',
+          });
+          n.onclick = () => { window.focus(); n.close(); };
+        }
+      }
       return;
     }
 

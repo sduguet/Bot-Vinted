@@ -189,16 +189,23 @@ function fetchCatalog(url, cookie, searchText) {
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
 
-  const { search_text, price_from, price_to, per_page, order } = req.query;
+  const { search_text, price_from, price_to, per_page, order, cookie: manualCookie } = req.query;
 
   let cookie;
-  try {
-    cookie = await getVintedCookie();
-  } catch (err) {
-    return res.status(503).json({
-      error: 'Impossible d\'obtenir un cookie Vinted',
-      detail: err.message,
-    });
+
+  // Priorité 1 : cookie manuel transmis par le frontend
+  if (manualCookie && manualCookie.includes('_vinted_fr_session')) {
+    cookie = manualCookie;
+  } else {
+    // Priorité 2 : cookie automatique
+    try {
+      cookie = await getVintedCookie();
+    } catch (err) {
+      return res.status(503).json({
+        error: 'Cookie automatique indisponible — configure un cookie manuel',
+        detail: err.message,
+      });
+    }
   }
 
   const params = new URLSearchParams({
