@@ -318,6 +318,7 @@ const PROXY = '/api';
 let alerts = [], botRunning = false, botInterval = null, countdownInterval = null, nextScanTime = null;
 let resultsData = {}, proxyOk = false;
 let lastTopItems = {};
+let lastScanTime = {};
 let viewMode = 'alerts';
 const LS_COOKIE_KEY = 'bot-vinted-cookie';
 function getManualCookie()    { return localStorage.getItem(LS_COOKIE_KEY) || ''; }
@@ -593,21 +594,37 @@ async function fetchAlert(alert) {
 
     // ── Détection de nouveaux articles : on se base sur les IDs connus, pas sur items[0] ──
     // Au 1er scan on mémorise juste les IDs sans notifier
+    const scanStartedAt = lastScanTime[alert.id] || 0;
+
     if (isFirstScan) {
+      // Premier scan : on mémorise sans notifier
       lastTopItems[alert.id] = new Set(items.map(i => i.id));
     } else {
       const knownIds = lastTopItems[alert.id] || new Set();
-      const newItems = items.filter(i => !knownIds.has(i.id));
+
+      // Un article est "nouveau" si :
+      //   1. Son ID n'était pas dans le scan précédent
+      //   2. ET son _publishedAt est postérieur au début du scan précédent
+      //      (évite les faux positifs sur des articles anciens qui réapparaissent
+      //       en raison d'un changement de pagination côté Vinted)
+      const newItems = items.filter(i =>
+        !knownIds.has(i.id) &&
+        i._publishedAt > 0 &&
+        i._publishedAt >= scanStartedAt
+      );
+
       if (newItems.length > 0) {
-        // Trier par date de publication pour notifier le plus récent
         newItems.sort((a, b) => b._publishedAt - a._publishedAt);
         const best = newItems[0];
         log(`🔔 ${newItems.length} nouvel(s) article(s) pour "${alert.keywords}" : ${best.title || best.id}`, 'info');
         sendDesktopNotif(alert, best);
       }
-      // Mettre à jour l'ensemble des IDs connus
+
       lastTopItems[alert.id] = new Set(items.map(i => i.id));
     }
+
+    // Mémoriser le timestamp du scan courant pour le prochain tour
+    lastScanTime[alert.id] = Date.now();
   } catch(err) {
     log(`✗ "${alert.keywords}": ${err.message}`, 'error');
   }
