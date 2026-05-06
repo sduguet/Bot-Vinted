@@ -578,38 +578,35 @@ async function fetchAlert(alert) {
     const existingMap = {};
     (resultsData[alert.id] || []).forEach(i => existingMap[i.id] = i);
 
-    resultsData[alert.id] = items;
-
-    // ── Détection de nouveaux articles : on se base sur les IDs connus, pas sur items[0] ──
-    // Au 1er scan on mémorise juste les IDs sans notifier
-    const scanStartedAt = lastScanTime[alert.id] || 0;
+    // lastScanTime mémorise le moment du scan précédent.
+    // Un article est "nouveau" si publié APRÈS ce dernier scan.
+    const prevScanTime = lastScanTime[alert.id] || 0;
 
     items = items.map(i => {
       const prev = existingMap[i.id];
       return {
         ...i,
-        _isNew: !isFirstScan && !prev && i._publishedAt > 0 && i._publishedAt >= scanStartedAt,
+        // _isNew : ID inconnu ET publié après le dernier scan
+        _isNew: !isFirstScan && !prev && i._publishedAt > 0 && i._publishedAt >= prevScanTime,
       };
     });
+
+    resultsData[alert.id] = items;
 
     const nw = items.filter(i => i._isNew).length;
     if (nw) log(`🆕 ${nw} nouvelle(s) annonce(s) pour "${alert.keywords}"`, 'info');
 
     if (isFirstScan) {
-      // Premier scan : on mémorise sans notifier
+      // Premier scan : on mémorise les IDs sans notifier
       lastTopItems[alert.id] = new Set(items.map(i => i.id));
     } else {
       const knownIds = lastTopItems[alert.id] || new Set();
 
-      // Un article est "nouveau" si :
-      //   1. Son ID n'était pas dans le scan précédent
-      //   2. ET son _publishedAt est postérieur au début du scan précédent
-      //      (évite les faux positifs sur des articles anciens qui réapparaissent
-      //       en raison d'un changement de pagination côté Vinted)
+      // Même critère que _isNew : ID inconnu + publié après le dernier scan
       const newItems = items.filter(i =>
         !knownIds.has(i.id) &&
         i._publishedAt > 0 &&
-        i._publishedAt >= scanStartedAt
+        i._publishedAt >= prevScanTime
       );
 
       if (newItems.length > 0) {
@@ -622,7 +619,7 @@ async function fetchAlert(alert) {
       lastTopItems[alert.id] = new Set(items.map(i => i.id));
     }
 
-    // Mémoriser le timestamp du scan courant pour le prochain tour
+    // Mémoriser le timestamp de CE scan pour le prochain tour
     lastScanTime[alert.id] = Date.now();
   } catch(err) {
     log(`✗ "${alert.keywords}": ${err.message}`, 'error');
