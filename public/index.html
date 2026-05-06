@@ -578,23 +578,22 @@ async function fetchAlert(alert) {
     const existingMap = {};
     (resultsData[alert.id] || []).forEach(i => existingMap[i.id] = i);
 
-    items = items.map(i => {
-      const prev = existingMap[i.id];
-      return {
-        ...i,
-        // _isNew = false au 1er scan (on n'a rien à comparer) ; vrai seulement si absent du scan précédent
-        _isNew: !isFirstScan && !prev,
-      };
-    });
-
-    const nw = items.filter(i => i._isNew).length;
-    if (nw) log(`🆕 ${nw} nouvelle(s) annonce(s) pour "${alert.keywords}"`, 'info');
-
     resultsData[alert.id] = items;
 
     // ── Détection de nouveaux articles : on se base sur les IDs connus, pas sur items[0] ──
     // Au 1er scan on mémorise juste les IDs sans notifier
     const scanStartedAt = lastScanTime[alert.id] || 0;
+
+    items = items.map(i => {
+      const prev = existingMap[i.id];
+      return {
+        ...i,
+        _isNew: !isFirstScan && !prev && i._publishedAt > 0 && i._publishedAt >= scanStartedAt,
+      };
+    });
+
+    const nw = items.filter(i => i._isNew).length;
+    if (nw) log(`🆕 ${nw} nouvelle(s) annonce(s) pour "${alert.keywords}"`, 'info');
 
     if (isFirstScan) {
       // Premier scan : on mémorise sans notifier
