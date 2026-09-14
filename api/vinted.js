@@ -10,18 +10,48 @@ const IOS_USER_AGENT = 'vinted-ios Vinted/22.6.1 (lt.manodrabuziai.fr; build:217
 const APP_VERSION     = '22.6.1';
 const DEVICE_MODEL    = 'iPhone10,6';
 
+// ── ZenRows ───────────────────────────────────────────────────────────────────
+// Les requêtes vers vinted.fr ne partent plus directement de Vercel (IP
+// datacenter systématiquement challengée par Cloudflare). Elles transitent
+// par l'API ZenRows, qui les fait passer par une IP résidentielle propre.
+const ZENROWS_API_KEY = process.env.ZENROWS_API_KEY;
+const ZENROWS_ENDPOINT = 'https://api.zenrows.com/v1/';
+
 let session = null; // { access_token, refresh_token, expiration_date }
 let lastOauthFailure = null; // { status, body, at } — pour le mode debug
 
-function postJson(url, body, headers = {}) {
+// Construit l'URL d'appel à ZenRows pour une cible donnée.
+// - premium_proxy : IP résidentielle (indispensable ici, sinon même souci qu'avant)
+// - custom_headers : transmet nos headers (User-Agent iOS, Authorization…) à Vinted
+// - original_status : renvoie le vrai code HTTP de Vinted (pas celui de ZenRows)
+// - allowed_status_codes : renvoie quand même le corps même si Vinted répond en erreur,
+//   utile pour continuer à débugger comme avant
+function buildZenrowsUrl(targetUrl) {
+  if (!ZENROWS_API_KEY) {
+    throw new Error('ZENROWS_API_KEY manquante dans les variables d\'environnement');
+  }
+  const qs = new URLSearchParams({
+    apikey: ZENROWS_API_KEY,
+    url: targetUrl,
+    premium_proxy: 'true',
+    custom_headers: 'true',
+    original_status: 'true',
+    allowed_status_codes: '400,401,403,404,429,500,502,503',
+  });
+  return `${ZENROWS_ENDPOINT}?${qs.toString()}`;
+}
+
+// POST JSON, relayé via ZenRows. Le body JSON et les headers custom (User-Agent…)
+// sont transmis tels quels à l'URL cible grâce à custom_headers=true.
+function postJsonViaZenrows(targetUrl, body, headers = {}) {
   return new Promise((resolve, reject) => {
     const data = Buffer.from(JSON.stringify(body));
-    const req = https.request(url, {
+    const req = https.request(buildZenrowsUrl(targetUrl), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': data.length,
-        ...headers,
+        ...headers, // ex: User-Agent iOS -> transmis à Vinted par ZenRows
       },
     }, (res) => {
       let chunks = Buffer.alloc(0);
@@ -29,21 +59,22 @@ function postJson(url, body, headers = {}) {
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: chunks.toString('utf8') }));
     });
     req.on('error', reject);
-    req.setTimeout(15000, () => { req.destroy(); reject(new Error('Timeout (15s)')); });
+    req.setTimeout(20000, () => { req.destroy(); reject(new Error('Timeout (20s)')); });
     req.write(data);
     req.end();
   });
 }
 
-function getJson(url, headers = {}) {
+// GET, relayé via ZenRows, mêmes principes.
+function getJsonViaZenrows(targetUrl, headers = {}) {
   return new Promise((resolve, reject) => {
-    const req = https.get(url, { headers }, (res) => {
+    const req = https.get(buildZenrowsUrl(targetUrl), { headers }, (res) => {
       let chunks = Buffer.alloc(0);
       res.on('data', c => { chunks = Buffer.concat([chunks, c]); });
-      res.on('end', () => resolve({ status: res.statusCode, body: chunks.toString('utf8') }));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: chunks.toString('utf8') }));
     });
     req.on('error', reject);
-    req.setTimeout(15000, () => { req.destroy(); reject(new Error('Timeout (15s)')); });
+    req.setTimeout(20000, () => { req.destroy(); reject(new Error('Timeout (20s)')); });
   });
 }
 
@@ -56,7 +87,7 @@ async function getOauthToken() {
     payload.refresh_token = session.refresh_token;
   }
 
-  const res = await postJson('https://www.vinted.fr/oauth/token', payload, {
+  const res = await postJsonViaZenrows('https://www.vinted.fr/oauth/token', payload, {
     'User-Agent': IOS_USER_AGENT,
   });
 
@@ -129,7 +160,7 @@ async function fetchCatalog(params) {
     'Accept': 'application/json',
   };
 
-  let res = await getJson(url, headers);
+  let res = await getJsonViaZenrows(url, headers);
 
   // Token expiré/invalide entre deux scans → on retente une seule fois après renouvellement
   if (res.status === 401) {
@@ -139,7 +170,7 @@ async function fetchCatalog(params) {
     );
     session = null;
     const s2 = await ensureSession();
-    res = await getJson(url, { ...headers, 'Authorization': `Bearer ${s2.access_token}` });
+    res = await getJsonViaZenrows(url, { ...headers, 'Authorization': `Bearer ${s2.access_token}` });
     if (res.status !== 200) {
       console.error(
         `[vinted-catalog] retry après renouvellement toujours en échec, HTTP ${res.status}\n` +
