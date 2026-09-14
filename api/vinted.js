@@ -60,6 +60,11 @@ async function getOauthToken() {
   });
 
   if (res.status !== 200) {
+    console.error(
+      `[vinted-oauth] échec (${payload.grant_type}) HTTP ${res.status}\n` +
+      `  body (500 premiers car.): ${res.body.slice(0, 500)}`
+    );
+
     // Si le refresh échoue, on repart sur un password grant propre
     if (payload.grant_type === 'refresh_token') {
       session = null;
@@ -70,7 +75,10 @@ async function getOauthToken() {
 
   let content;
   try { content = JSON.parse(res.body); }
-  catch { throw new Error('Réponse OAuth non-JSON'); }
+  catch {
+    console.error(`[vinted-oauth] réponse 200 mais non-JSON: ${res.body.slice(0, 500)}`);
+    throw new Error('Réponse OAuth non-JSON');
+  }
 
   session = {
     access_token: content.access_token,
@@ -106,9 +114,25 @@ async function fetchCatalog(params) {
 
   // Token expiré/invalide entre deux scans → on retente une seule fois après renouvellement
   if (res.status === 401) {
+    console.error(
+      `[vinted-catalog] HTTP 401 avec le token en cache — renouvellement puis retry\n` +
+      `  body (500 premiers car.): ${res.body.slice(0, 500)}`
+    );
     session = null;
     const s2 = await ensureSession();
     res = await getJson(url, { ...headers, 'Authorization': `Bearer ${s2.access_token}` });
+    if (res.status !== 200) {
+      console.error(
+        `[vinted-catalog] retry après renouvellement toujours en échec, HTTP ${res.status}\n` +
+        `  body (500 premiers car.): ${res.body.slice(0, 500)}`
+      );
+    }
+  } else if (res.status !== 200) {
+    console.error(
+      `[vinted-catalog] HTTP ${res.status}\n` +
+      `  url: ${url}\n` +
+      `  body (500 premiers car.): ${res.body.slice(0, 500)}`
+    );
   }
 
   return res;
@@ -146,6 +170,7 @@ export default async function handler(req, res) {
     });
 
   } catch (err) {
+    console.error(`[vinted-handler] exception: ${err.message}`, err.stack);
     return res.status(500).json({ error: err.message });
   }
 }
