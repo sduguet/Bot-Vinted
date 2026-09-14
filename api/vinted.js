@@ -11,6 +11,7 @@ const APP_VERSION     = '22.6.1';
 const DEVICE_MODEL    = 'iPhone10,6';
 
 let session = null; // { access_token, refresh_token, expiration_date }
+let lastOauthFailure = null; // { status, body, at } — pour le mode debug
 
 function postJson(url, body, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -25,7 +26,7 @@ function postJson(url, body, headers = {}) {
     }, (res) => {
       let chunks = Buffer.alloc(0);
       res.on('data', c => { chunks = Buffer.concat([chunks, c]); });
-      res.on('end', () => resolve({ status: res.statusCode, body: chunks.toString('utf8') }));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: chunks.toString('utf8') }));
     });
     req.on('error', reject);
     req.setTimeout(15000, () => { req.destroy(); reject(new Error('Timeout (15s)')); });
@@ -64,6 +65,13 @@ async function getOauthToken() {
       `[vinted-oauth] échec (${payload.grant_type}) HTTP ${res.status}\n` +
       `  body (500 premiers car.): ${res.body.slice(0, 500)}`
     );
+    lastOauthFailure = {
+      grant_type: payload.grant_type,
+      status: res.status,
+      headers: res.headers || null,
+      body: res.body.slice(0, 2000),
+      at: new Date().toISOString(),
+    };
 
     // Si le refresh échoue, on repart sur un password grant propre
     if (payload.grant_type === 'refresh_token') {
@@ -77,8 +85,19 @@ async function getOauthToken() {
   try { content = JSON.parse(res.body); }
   catch {
     console.error(`[vinted-oauth] réponse 200 mais non-JSON: ${res.body.slice(0, 500)}`);
+    lastOauthFailure = {
+      grant_type: payload.grant_type,
+      status: res.status,
+      headers: res.headers || null,
+      body: res.body.slice(0, 2000),
+      at: new Date().toISOString(),
+      note: 'HTTP 200 mais corps non-JSON',
+    };
     throw new Error('Réponse OAuth non-JSON');
   }
+
+  // Succès : on peut effacer l'échec précédent (optionnel, garde l'historique sinon)
+  // lastOauthFailure = null;
 
   session = {
     access_token: content.access_token,
@@ -142,7 +161,8 @@ async function fetchCatalog(params) {
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
 
-  const { search_text, price_from, price_to, per_page, order } = req.query;
+  const { search_text, price_from, price_to, per_page, order, debug } = req.query;
+  const isDebug = debug === '1' || debug === 'true';
 
   const params = new URLSearchParams({
     search_text: search_text || '',
@@ -167,10 +187,14 @@ export default async function handler(req, res) {
     return res.status(result.status).json({
       error: `Vinted a répondu ${result.status}`,
       detail: result.body.slice(0, 500),
+      ...(isDebug ? { debug: lastOauthFailure } : {}),
     });
 
   } catch (err) {
     console.error(`[vinted-handler] exception: ${err.message}`, err.stack);
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({
+      error: err.message,
+      ...(isDebug ? { debug: lastOauthFailure } : {}),
+    });
   }
 }
