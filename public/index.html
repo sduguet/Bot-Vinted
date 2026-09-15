@@ -343,7 +343,7 @@ async function requestNotifPermission() {
 
 function sendDesktopNotif(alert, item) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
-  const price = item.price?.amount ? `${item.price.amount} ${item.currency || '€'}` : '';
+  const price = item.price?.amount ? `${item.price.amount} ${item.price?.currency_code || '€'}` : '';
   const img   = item.photo?.url || item.photos?.[0]?.url || '';
   const url   = itemUrl(item);
   const title = item.title || 'Nouvelle annonce';
@@ -553,15 +553,12 @@ async function fetchAlert(alert) {
       // On garde le tableau tel quel dans ce cas (le sélecteur est de toute façon masqué dans l'UI).
     }
 
-    const isFirstScan = !resultsData[alert.id];
-    const existingMap = {};
-    (resultsData[alert.id] || []).forEach(i => existingMap[i.id] = i);
+    const isFirstScan = !lastTopItems[alert.id];
 
     items = items.map(i => ({
       ...i,
-      // _isNew : ID inconnu au scan précédent (on ne peut plus se fier à une date exacte,
-      // l'ID croissant sert d'indicateur d'ordre mais pas de fenêtre temporelle absolue)
-      _isNew: !isFirstScan && !existingMap[i.id],
+      // _isNew : ID jamais vu depuis le début (mémoire cumulative, pas juste le dernier scan)
+      _isNew: !isFirstScan && !lastTopItems[alert.id].has(i.id),
     }));
 
     resultsData[alert.id] = items;
@@ -573,8 +570,7 @@ async function fetchAlert(alert) {
       // Premier scan : on mémorise les IDs sans notifier
       lastTopItems[alert.id] = new Set(items.map(i => i.id));
     } else {
-      const knownIds = lastTopItems[alert.id] || new Set();
-      const newItems = items.filter(i => !knownIds.has(i.id));
+      const newItems = items.filter(i => i._isNew);
 
       if (newItems.length > 0) {
         newItems.sort((a, b) => b._publishedAt - a._publishedAt);
@@ -583,7 +579,20 @@ async function fetchAlert(alert) {
         sendDesktopNotif(alert, best);
       }
 
-      lastTopItems[alert.id] = new Set(items.map(i => i.id));
+      // Union avec les IDs déjà connus (jamais un remplacement complet) pour
+      // éviter qu'un article qui sort du top N puis y revient (annonce vendue
+      // au-dessus dans le classement, etc.) ne soit signalé comme "nouveau" à tort.
+      const merged = new Set(lastTopItems[alert.id]);
+      items.forEach(i => merged.add(i.id));
+
+      // Limite de taille pour éviter une croissance illimitée en mémoire sur le long terme
+      const MAX_KNOWN_IDS = 1000;
+      if (merged.size > MAX_KNOWN_IDS) {
+        const arr = Array.from(merged);
+        lastTopItems[alert.id] = new Set(arr.slice(arr.length - MAX_KNOWN_IDS));
+      } else {
+        lastTopItems[alert.id] = merged;
+      }
     }
   } catch(err) {
     log(`✗ "${alert.keywords}": ${err.message}`, 'error');
@@ -628,7 +637,7 @@ function renderResults() {
 }
 
 function cardHTML(item, showAlertTag = false) {
-  const price = item.price?.amount ? `${item.price.amount} ${item.currency||'€'}` : '—';
+  const price = item.price?.amount ? `${item.price.amount} ${item.price?.currency_code||'€'}` : '—';
   const img   = item.photo?.url || item.photos?.[0]?.url || '';
   const url   = itemUrl(item);
   const title = esc(item.title||'Sans titre');
