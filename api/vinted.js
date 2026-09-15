@@ -156,7 +156,8 @@ function fetchCatalog(url, cookie, searchText) {
     'DNT':             '1',
     'Sec-Fetch-Dest':  'empty',
     'Sec-Fetch-Mode':  'cors',
-    'Sec-Fetch-Site':  'same-origin',
+    // svc-catalogue est un sous-domaine séparé (api.vinted.fr) → requête cross-site du point de vue du navigateur
+    'Sec-Fetch-Site':  'same-site',
     'Cookie':          cookie,
   };
 
@@ -191,10 +192,19 @@ export default async function handler(req, res) {
 
   const { search_text, price_from, price_to, per_page, order, cookie: manualCookie } = req.query;
 
+  // Générateur simple d'UUID v4, sans dépendance externe
+  function uuidv4() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+      const r = Math.random() * 16 | 0;
+      const v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  }
+
   let cookie;
 
   // Priorité 1 : cookie manuel transmis par le frontend
-  if (manualCookie && manualCookie.includes('_vinted_fr_session')) {
+  if (manualCookie && (manualCookie.includes('access_token_web') || manualCookie.includes('_vinted_fr_session'))) {
     cookie = manualCookie;
   } else {
     // Priorité 2 : cookie automatique
@@ -209,15 +219,29 @@ export default async function handler(req, res) {
   }
 
   const params = new URLSearchParams({
-    search_text: search_text || '',
-    catalog_ids: '',
-    price_from:  price_from  || '',
-    price_to:    price_to    || '',
-    per_page:    per_page    || 15,
-    order:       order       || 'newest_first',
+    page:                     1,
+    per_page:                 per_page || 15,
+    time:                     Math.floor(Date.now() / 1000),
+    search_text:              search_text || '',
+    order:                    order || 'newest_first',
+    global_search_session_id: uuidv4(),
   });
 
-  const url = `https://www.vinted.fr/api/v2/catalog/items?${params}`;
+  // price_from / price_to / currency ne sont ajoutés que si un prix est précisé,
+  // comme observé dans les requêtes du navigateur (absents quand aucun filtre de prix n'est actif)
+  if (price_from) params.set('price_from', price_from);
+  if (price_to)   params.set('price_to', price_to);
+  if (price_from || price_to) params.set('currency', 'EUR');
+
+  // Filtres avancés vus dans l'URL du navigateur (vides par défaut, non utilisés pour l'instant)
+  params.set('attribute_ids[catalog]', '');
+  params.set('attribute_ids[size]', '');
+  params.set('attribute_ids[brand]', '');
+  params.set('attribute_ids[status]', '');
+  params.set('attribute_ids[color]', '');
+  params.set('attribute_ids[material]', '');
+
+  const url = `https://api.vinted.fr/svc-catalogue/items?${params}`;
 
   try {
     const result = await fetchCatalog(url, cookie, search_text);
