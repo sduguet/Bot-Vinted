@@ -317,7 +317,7 @@
 const PROXY = '/api';
 let alerts = [], botRunning = false, botInterval = null, countdownInterval = null, nextScanTime = null;
 let resultsData = {}, proxyOk = false;
-let lastTopItems = {};
+let maxKnownId = {}; // { [alertId]: plus grand ID d'article déjà vu pour cette alerte }
 let viewMode = 'alerts';
 const LS_COOKIE_KEY = 'bot-vinted-cookie';
 function getManualCookie()    { return localStorage.getItem(LS_COOKIE_KEY) || ''; }
@@ -430,8 +430,8 @@ function addAlert() {
   document.getElementById('inputPriceMax').value = '';
   log(`✓ Alerte ajoutée : "${kw}"`, 'info');
 }
-function toggleAlert(id)  { const a=alerts.find(a=>a.id===id); if(a){ a.enabled=!a.enabled; if(!a.enabled){ delete resultsData[id]; delete lastTopItems[id]; renderResults(); } saveAlerts(); renderAlerts(); } }
-function removeAlert(id)  { alerts = alerts.filter(a=>a.id!==id); delete resultsData[id]; delete lastTopItems[id]; saveAlerts(); renderAlerts(); renderResults(); log('✕ Alerte supprimée','warn'); }
+function toggleAlert(id)  { const a=alerts.find(a=>a.id===id); if(a){ a.enabled=!a.enabled; if(!a.enabled){ delete resultsData[id]; delete maxKnownId[id]; renderResults(); } saveAlerts(); renderAlerts(); } }
+function removeAlert(id)  { alerts = alerts.filter(a=>a.id!==id); delete resultsData[id]; delete maxKnownId[id]; saveAlerts(); renderAlerts(); renderResults(); log('✕ Alerte supprimée','warn'); }
 function renderAlerts() {
   const list = document.getElementById('alertList');
   if (!alerts.length) { list.innerHTML='<div style="text-align:center;color:var(--text-dim);font-size:13px;padding:20px 0;">Aucune alerte configurée</div>'; return; }
@@ -553,12 +553,17 @@ async function fetchAlert(alert) {
       // On garde le tableau tel quel dans ce cas (le sélecteur est de toute façon masqué dans l'UI).
     }
 
-    const isFirstScan = !lastTopItems[alert.id];
+    const isFirstScan = maxKnownId[alert.id] === undefined;
+    const prevMax = maxKnownId[alert.id] || 0;
 
     items = items.map(i => ({
       ...i,
-      // _isNew : ID jamais vu depuis le début (mémoire cumulative, pas juste le dernier scan)
-      _isNew: !isFirstScan && !lastTopItems[alert.id].has(i.id),
+      // _isNew : strictement plus récent que la plus récente annonce déjà vue pour cette alerte.
+      // On ne compare qu'à ce seuil (pas à un ensemble d'IDs) : une annonce ancienne qui
+      // réapparaît dans les résultats (changement de classement, remontée après suppression
+      // d'une annonce mieux classée, etc.) a un ID inférieur au seuil et ne déclenchera donc
+      // plus jamais de notification, même si elle "disparaît puis revient" dans le flux.
+      _isNew: !isFirstScan && i.id > prevMax,
     }));
 
     resultsData[alert.id] = items;
@@ -567,31 +572,24 @@ async function fetchAlert(alert) {
     if (nw) log(`🆕 ${nw} nouvelle(s) annonce(s) pour "${alert.keywords}"`, 'info');
 
     if (isFirstScan) {
-      // Premier scan : on mémorise les IDs sans notifier
-      lastTopItems[alert.id] = new Set(items.map(i => i.id));
+      // Premier scan : on mémorise le seuil sans notifier
+      if (items.length) maxKnownId[alert.id] = Math.max(...items.map(i => i.id));
+      else maxKnownId[alert.id] = 0;
     } else {
       const newItems = items.filter(i => i._isNew);
 
       if (newItems.length > 0) {
-        newItems.sort((a, b) => b._publishedAt - a._publishedAt);
+        newItems.sort((a, b) => b.id - a.id);
         const best = newItems[0];
         log(`🔔 ${newItems.length} nouvel(s) article(s) pour "${alert.keywords}" : ${best.title || best.id}`, 'info');
         sendDesktopNotif(alert, best);
       }
 
-      // Union avec les IDs déjà connus (jamais un remplacement complet) pour
-      // éviter qu'un article qui sort du top N puis y revient (annonce vendue
-      // au-dessus dans le classement, etc.) ne soit signalé comme "nouveau" à tort.
-      const merged = new Set(lastTopItems[alert.id]);
-      items.forEach(i => merged.add(i.id));
-
-      // Limite de taille pour éviter une croissance illimitée en mémoire sur le long terme
-      const MAX_KNOWN_IDS = 1000;
-      if (merged.size > MAX_KNOWN_IDS) {
-        const arr = Array.from(merged);
-        lastTopItems[alert.id] = new Set(arr.slice(arr.length - MAX_KNOWN_IDS));
-      } else {
-        lastTopItems[alert.id] = merged;
+      // Le seuil ne peut que monter, jamais redescendre — c'est ce qui garantit
+      // qu'une annonce déjà vue une fois ne notifie plus jamais, quel que soit
+      // son comportement d'apparition/disparition dans les scans suivants.
+      if (items.length) {
+        maxKnownId[alert.id] = Math.max(prevMax, ...items.map(i => i.id));
       }
     }
   } catch(err) {
