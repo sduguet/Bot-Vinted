@@ -317,7 +317,15 @@
 const PROXY = '/api';
 let alerts = [], botRunning = false, botInterval = null, countdownInterval = null, nextScanTime = null;
 let resultsData = {}, proxyOk = false;
-let maxKnownId = {}; // { [alertId]: plus grand ID d'article déjà vu pour cette alerte }
+let globalMaxId = null; // plus grand ID d'article vu, toutes alertes confondues (null = jamais scanné)
+const LS_MAXID_KEY = 'bot-vinted-maxid';
+function loadGlobalMaxId() {
+  const raw = localStorage.getItem(LS_MAXID_KEY);
+  if (raw) globalMaxId = parseInt(raw, 10);
+}
+function saveGlobalMaxId() {
+  if (globalMaxId != null) localStorage.setItem(LS_MAXID_KEY, String(globalMaxId));
+}
 let viewMode = 'alerts';
 const LS_COOKIE_KEY = 'bot-vinted-cookie';
 function getManualCookie()    { return localStorage.getItem(LS_COOKIE_KEY) || ''; }
@@ -430,8 +438,8 @@ function addAlert() {
   document.getElementById('inputPriceMax').value = '';
   log(`✓ Alerte ajoutée : "${kw}"`, 'info');
 }
-function toggleAlert(id)  { const a=alerts.find(a=>a.id===id); if(a){ a.enabled=!a.enabled; if(!a.enabled){ delete resultsData[id]; delete maxKnownId[id]; renderResults(); } saveAlerts(); renderAlerts(); } }
-function removeAlert(id)  { alerts = alerts.filter(a=>a.id!==id); delete resultsData[id]; delete maxKnownId[id]; saveAlerts(); renderAlerts(); renderResults(); log('✕ Alerte supprimée','warn'); }
+function toggleAlert(id)  { const a=alerts.find(a=>a.id===id); if(a){ a.enabled=!a.enabled; if(!a.enabled){ delete resultsData[id]; renderResults(); } saveAlerts(); renderAlerts(); } }
+function removeAlert(id)  { alerts = alerts.filter(a=>a.id!==id); delete resultsData[id]; saveAlerts(); renderAlerts(); renderResults(); log('✕ Alerte supprimée','warn'); }
 function renderAlerts() {
   const list = document.getElementById('alertList');
   if (!alerts.length) { list.innerHTML='<div style="text-align:center;color:var(--text-dim);font-size:13px;padding:20px 0;">Aucune alerte configurée</div>'; return; }
@@ -497,13 +505,54 @@ async function runScan() {
   const active = alerts.filter(a=>a.enabled);
   if (!active.length) return;
   log(`⟳ Scan de ${active.length} alerte(s)…`, 'info');
-  for (const a of active) await fetchAlert(a);
+
+  const isFirstWave = globalMaxId === null;
+  const prevMax = globalMaxId || 0;
+
+  // On récupère d'abord TOUTES les alertes, puis on raisonne sur la vague entière
+  const wave = []; // { item, alert }
+  for (const a of active) {
+    const items = await fetchAlert(a);
+    items.forEach(item => wave.push({ item, alert: a }));
+  }
+
+  if (isFirstWave) {
+    // Premier scan global : on mémorise le seuil sans notifier
+    if (wave.length) globalMaxId = Math.max(...wave.map(w => w.item.id));
+    else globalMaxId = 0;
+    saveGlobalMaxId();
+  } else {
+    // Seules les annonces avec un ID strictement supérieur au seuil précédent
+    // sont considérées comme nouvelles, peu importe l'alerte/catégorie à laquelle
+    // elles appartiennent.
+    const fresh = wave.filter(w => w.item.id > prevMax);
+    fresh.sort((a, b) => b.item.id - a.item.id); // plus récent en premier
+
+    if (fresh.length) {
+      log(`🔔 ${fresh.length} nouvelle(s) annonce(s) au total sur cette vague`, 'info');
+      for (const { item, alert } of fresh) {
+        log(`🆕 "${alert.keywords}" : ${item.title || item.id}`, 'info');
+        sendDesktopNotif(alert, item);
+      }
+    }
+
+    if (wave.length) {
+      globalMaxId = Math.max(prevMax, ...wave.map(w => w.item.id));
+      saveGlobalMaxId();
+    }
+  }
+
+  // Marquer les items pour l'affichage (badge "nouveau" éventuel dans l'UI)
+  for (const { item } of wave) item._isNew = !isFirstWave && item.id > prevMax;
+
   renderResults(); log('✓ Scan terminé', 'info');
 }
 
 // ── FETCH ────────────────────────────────────────────────────────────────────
+// Récupère les résultats d'une alerte et les stocke pour l'affichage.
+// Ne fait AUCUNE détection de nouveauté ni notification ici — c'est runScan
+// qui centralise ça sur l'ensemble de la vague (voir plus haut).
 async function fetchAlert(alert) {
-  const period = parseInt(document.getElementById('selectPeriod').value);
   const params = new URLSearchParams({
     search_text: alert.keywords,
     price_from: alert.priceMin||'',
@@ -536,7 +585,7 @@ async function fetchAlert(alert) {
           n.onclick = () => { window.focus(); n.close(); };
         }
       }
-      return;
+      return [];
     }
 
     let items = json.items || [];
@@ -547,53 +596,11 @@ async function fetchAlert(alert) {
     // donc un ID plus élevé = annonce publiée plus récemment.
     items = items.map(i => ({ ...i, _publishedAt: i.id }));
 
-    if (period > 0) {
-      // Le filtrage par période réelle (24h/48h) n'est plus possible sans date
-      // exacte — on ne peut plus estimer une "vraie" fenêtre temporelle depuis l'ID seul.
-      // On garde le tableau tel quel dans ce cas (le sélecteur est de toute façon masqué dans l'UI).
-    }
-
-    const isFirstScan = maxKnownId[alert.id] === undefined;
-    const prevMax = maxKnownId[alert.id] || 0;
-
-    items = items.map(i => ({
-      ...i,
-      // _isNew : strictement plus récent que la plus récente annonce déjà vue pour cette alerte.
-      // On ne compare qu'à ce seuil (pas à un ensemble d'IDs) : une annonce ancienne qui
-      // réapparaît dans les résultats (changement de classement, remontée après suppression
-      // d'une annonce mieux classée, etc.) a un ID inférieur au seuil et ne déclenchera donc
-      // plus jamais de notification, même si elle "disparaît puis revient" dans le flux.
-      _isNew: !isFirstScan && i.id > prevMax,
-    }));
-
     resultsData[alert.id] = items;
-
-    const nw = items.filter(i => i._isNew).length;
-    if (nw) log(`🆕 ${nw} nouvelle(s) annonce(s) pour "${alert.keywords}"`, 'info');
-
-    if (isFirstScan) {
-      // Premier scan : on mémorise le seuil sans notifier
-      if (items.length) maxKnownId[alert.id] = Math.max(...items.map(i => i.id));
-      else maxKnownId[alert.id] = 0;
-    } else {
-      const newItems = items.filter(i => i._isNew);
-
-      if (newItems.length > 0) {
-        newItems.sort((a, b) => b.id - a.id);
-        const best = newItems[0];
-        log(`🔔 ${newItems.length} nouvel(s) article(s) pour "${alert.keywords}" : ${best.title || best.id}`, 'info');
-        sendDesktopNotif(alert, best);
-      }
-
-      // Le seuil ne peut que monter, jamais redescendre — c'est ce qui garantit
-      // qu'une annonce déjà vue une fois ne notifie plus jamais, quel que soit
-      // son comportement d'apparition/disparition dans les scans suivants.
-      if (items.length) {
-        maxKnownId[alert.id] = Math.max(prevMax, ...items.map(i => i.id));
-      }
-    }
+    return items;
   } catch(err) {
     log(`✗ "${alert.keywords}": ${err.message}`, 'error');
+    return [];
   }
 }
 
@@ -642,7 +649,7 @@ function cardHTML(item, showAlertTag = false) {
   const city  = esc(item.user?.city||item.city||'');
   const alertTag = showAlertTag && item._alertKeywords
     ? `<div class="card-alert-tag">${esc(item._alertKeywords)}</div>` : '';
-  return `<a class="card" href="${url}" target="_blank" rel="noopener">
+  return `<a class="card" data-id="${item.id}" href="${url}" target="_blank" rel="noopener">
     ${img?`<img class="card-img" src="${img}" alt="${title}" loading="lazy">`:`<div class="card-img-ph">🎲</div>`}
     ${alertTag}
     <div class="card-body">
@@ -672,7 +679,7 @@ function itemUrl(item) {
 }
 
 // Init
-loadAlerts(); checkProxy(); renderAlerts();
+loadAlerts(); loadGlobalMaxId(); checkProxy(); renderAlerts();
 document.getElementById('vtAlerts').classList.add('active');
 </script>
 </body>
