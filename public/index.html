@@ -318,7 +318,6 @@ const PROXY = '/api';
 let alerts = [], botRunning = false, botInterval = null, countdownInterval = null, nextScanTime = null;
 let resultsData = {}, proxyOk = false;
 let lastTopItems = {};
-let lastScanTime = {};
 let viewMode = 'alerts';
 const LS_COOKIE_KEY = 'bot-vinted-cookie';
 function getManualCookie()    { return localStorage.getItem(LS_COOKIE_KEY) || ''; }
@@ -346,7 +345,7 @@ function sendDesktopNotif(alert, item) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   const price = item.price?.amount ? `${item.price.amount} ${item.currency || '€'}` : '';
   const img   = item.photo?.url || item.photos?.[0]?.url || '';
-  const url   = item.url || `https://www.vinted.fr/items/${item.id}`;
+  const url   = itemUrl(item);
   const title = item.title || 'Nouvelle annonce';
 
   const notif = new Notification(`🛍 Nouvel article — ${alert.keywords}`, {
@@ -542,54 +541,28 @@ async function fetchAlert(alert) {
 
     let items = json.items || [];
 
-    // ── Extraire le timestamp de publication depuis l'URL de la photo ──
-    // L'API Vinted ne retourne pas de champ date. Le seul indicateur fiable
-    // est le timestamp Unix présent dans l'URL des photos (ex: /1777970750.webp)
-    items = items.map(i => {
-      let _publishedAt = 0;
-
-      // Chercher dans photo.high_resolution.timestamp (le plus direct)
-      if (i.photo?.high_resolution?.timestamp > 0) {
-        _publishedAt = i.photo.high_resolution.timestamp * 1000;
-      }
-      // Fallback : extraire depuis l'URL de la photo principale
-      else if (i.photo?.url) {
-        const m = i.photo.url.match(/\/(\d{9,10})\.webp/);
-        if (m) _publishedAt = parseInt(m[1]) * 1000;
-      }
-      // Fallback : première photo du tableau photos[]
-      else if (i.photos?.[0]?.high_resolution?.timestamp > 0) {
-        _publishedAt = i.photos[0].high_resolution.timestamp * 1000;
-      }
-      else if (i.photos?.[0]?.url) {
-        const m = i.photos[0].url.match(/\/(\d{9,10})\.webp/);
-        if (m) _publishedAt = parseInt(m[1]) * 1000;
-      }
-
-      return { ...i, _publishedAt };
-    });
+    // ── Chronologie : Vinted a retiré le timestamp qui était dans l'URL/metadata
+    // des photos. On utilise désormais l'ID de l'article comme proxy : les IDs
+    // Vinted sont attribués de façon strictement croissante dans le temps,
+    // donc un ID plus élevé = annonce publiée plus récemment.
+    items = items.map(i => ({ ...i, _publishedAt: i.id }));
 
     if (period > 0) {
-      const cutoff = Date.now() - period * 1000;
-      items = items.filter(i => i._publishedAt > 0 && i._publishedAt >= cutoff);
+      // Le filtrage par période réelle (24h/48h) n'est plus possible sans date
+      // exacte — on ne peut plus estimer une "vraie" fenêtre temporelle depuis l'ID seul.
+      // On garde le tableau tel quel dans ce cas (le sélecteur est de toute façon masqué dans l'UI).
     }
 
     const isFirstScan = !resultsData[alert.id];
     const existingMap = {};
     (resultsData[alert.id] || []).forEach(i => existingMap[i.id] = i);
 
-    // lastScanTime mémorise le moment du scan précédent.
-    // Un article est "nouveau" si publié APRÈS ce dernier scan.
-    const prevScanTime = lastScanTime[alert.id] || 0;
-
-    items = items.map(i => {
-      const prev = existingMap[i.id];
-      return {
-        ...i,
-        // _isNew : ID inconnu ET publié après le dernier scan
-        _isNew: !isFirstScan && !prev && i._publishedAt > 0 && i._publishedAt >= prevScanTime,
-      };
-    });
+    items = items.map(i => ({
+      ...i,
+      // _isNew : ID inconnu au scan précédent (on ne peut plus se fier à une date exacte,
+      // l'ID croissant sert d'indicateur d'ordre mais pas de fenêtre temporelle absolue)
+      _isNew: !isFirstScan && !existingMap[i.id],
+    }));
 
     resultsData[alert.id] = items;
 
@@ -601,13 +574,7 @@ async function fetchAlert(alert) {
       lastTopItems[alert.id] = new Set(items.map(i => i.id));
     } else {
       const knownIds = lastTopItems[alert.id] || new Set();
-
-      // Même critère que _isNew : ID inconnu + publié après le dernier scan
-      const newItems = items.filter(i =>
-        !knownIds.has(i.id) &&
-        i._publishedAt > 0 &&
-        i._publishedAt >= prevScanTime
-      );
+      const newItems = items.filter(i => !knownIds.has(i.id));
 
       if (newItems.length > 0) {
         newItems.sort((a, b) => b._publishedAt - a._publishedAt);
@@ -618,9 +585,6 @@ async function fetchAlert(alert) {
 
       lastTopItems[alert.id] = new Set(items.map(i => i.id));
     }
-
-    // Mémoriser le timestamp de CE scan pour le prochain tour
-    lastScanTime[alert.id] = Date.now();
   } catch(err) {
     log(`✗ "${alert.keywords}": ${err.message}`, 'error');
   }
@@ -666,7 +630,7 @@ function renderResults() {
 function cardHTML(item, showAlertTag = false) {
   const price = item.price?.amount ? `${item.price.amount} ${item.currency||'€'}` : '—';
   const img   = item.photo?.url || item.photos?.[0]?.url || '';
-  const url   = item.url || `https://www.vinted.fr/items/${item.id}`;
+  const url   = itemUrl(item);
   const title = esc(item.title||'Sans titre');
   const city  = esc(item.user?.city||item.city||'');
   const alertTag = showAlertTag && item._alertKeywords
@@ -690,6 +654,15 @@ function log(msg, type='') {
   body.prepend(el); while(body.children.length>50) body.removeChild(body.lastChild);
 }
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+// Vinted renvoie désormais `url` en chemin relatif (ex: "/items/123-titre")
+// au lieu d'une URL absolue — il faut la reconstruire.
+function itemUrl(item) {
+  if (item.url) {
+    return item.url.startsWith('http') ? item.url : `https://www.vinted.fr${item.url}`;
+  }
+  return `https://www.vinted.fr/items/${item.id}`;
+}
 
 // Init
 loadAlerts(); checkProxy(); renderAlerts();
