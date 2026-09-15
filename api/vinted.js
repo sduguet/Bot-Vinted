@@ -5,81 +5,135 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 // ── Auth "client iOS" (même méthode que vintedpy) ────────────────────────────
 // Vinted expose un endpoint OAuth utilisé par son app iOS. En s'authentifiant
 // comme ce client officiel, on récupère un Bearer token directement, sans
-// avoir à simuler une session web (page d'accueil → cookies → Datadome…).
+// avoir à simuler une session web complète (login, etc.).
 const IOS_USER_AGENT = 'vinted-ios Vinted/22.6.1 (lt.manodrabuziai.fr; build:21794; iOS 15.2.0) iPhone10,6';
 const APP_VERSION     = '22.6.1';
 const DEVICE_MODEL    = 'iPhone10,6';
 
-// ── ZenRows ───────────────────────────────────────────────────────────────────
-// Les requêtes vers vinted.fr ne partent plus directement de Vercel (IP
-// datacenter systématiquement challengée par Cloudflare). Elles transitent
-// par l'API ZenRows, qui les fait passer par une IP résidentielle propre.
-const ZENROWS_API_KEY = process.env.ZENROWS_API_KEY;
-const ZENROWS_ENDPOINT = 'https://api.zenrows.com/v1/';
+// ── Requêtes directes ─────────────────────────────────────────────────────────
+// On appelle vinted.fr directement (plus de proxy tiers). Pour limiter les
+// blocages anti-bot (Datadome / Cloudflare), on "bootstrap" d'abord une vraie
+// session en visitant la page d'accueil pour récupérer les cookies qu'un
+// navigateur/app obtiendrait normalement, puis on les réutilise sur toutes
+// les requêtes suivantes (OAuth + catalogue). On les rafraîchit aussi à partir
+// des en-têtes Set-Cookie renvoyés par chaque réponse.
 
-let session = null; // { access_token, refresh_token, expiration_date }
+let session = null;         // { access_token, refresh_token, expiration_date }
+let cookieJar = {};         // { nom_cookie: valeur } — persiste tant que la fonction reste "chaude"
 let lastOauthFailure = null; // { status, body, at } — pour le mode debug
 
-// Construit l'URL d'appel à ZenRows pour une cible donnée.
-// - premium_proxy : IP résidentielle (indispensable ici, sinon même souci qu'avant)
-// - custom_headers : transmet nos headers (User-Agent iOS, Authorization…) à Vinted
-// - original_status : renvoie le vrai code HTTP de Vinted (pas celui de ZenRows)
-// - allowed_status_codes : renvoie quand même le corps même si Vinted répond en erreur,
-//   utile pour continuer à débugger comme avant
-function buildZenrowsUrl(targetUrl) {
-  if (!ZENROWS_API_KEY) {
-    throw new Error('ZENROWS_API_KEY manquante dans les variables d\'environnement');
-  }
-  const qs = new URLSearchParams({
-    apikey: ZENROWS_API_KEY,
-    url: targetUrl,
-    premium_proxy: 'true',
-    custom_headers: 'true',
-    original_status: 'true',
-    allowed_status_codes: '400,401,403,404,429,500,502,503',
-  });
-  return `${ZENROWS_ENDPOINT}?${qs.toString()}`;
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// POST JSON, relayé via ZenRows. Le body JSON et les headers custom (User-Agent…)
-// sont transmis tels quels à l'URL cible grâce à custom_headers=true.
-function postJsonViaZenrows(targetUrl, body, headers = {}) {
+// Parse les en-têtes Set-Cookie d'une réponse HTTP en objet { nom: valeur }
+function parseSetCookieHeaders(setCookieArr) {
+  if (!setCookieArr) return {};
+  const arr = Array.isArray(setCookieArr) ? setCookieArr : [setCookieArr];
+  const out = {};
+  for (const line of arr) {
+    const first = line.split(';')[0];
+    const idx = first.indexOf('=');
+    if (idx === -1) continue;
+    const name = first.slice(0, idx).trim();
+    const value = first.slice(idx + 1).trim();
+    if (name) out[name] = value;
+  }
+  return out;
+}
+
+function cookieJarToHeader(jar) {
+  return Object.entries(jar).map(([k, v]) => `${k}=${v}`).join('; ');
+}
+
+// Requête HTTPS générique (remplace les anciens helpers ZenRows).
+function request(method, targetUrl, { headers = {}, body = null, timeoutMs = 15000 } = {}) {
   return new Promise((resolve, reject) => {
-    const data = Buffer.from(JSON.stringify(body));
-    const req = https.request(buildZenrowsUrl(targetUrl), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': data.length,
-        ...headers, // ex: User-Agent iOS -> transmis à Vinted par ZenRows
+    const u = new URL(targetUrl);
+    const data = body ? Buffer.from(typeof body === 'string' ? body : JSON.stringify(body)) : null;
+
+    const reqHeaders = { ...headers };
+    if (data) {
+      reqHeaders['Content-Type'] = reqHeaders['Content-Type'] || 'application/json';
+      reqHeaders['Content-Length'] = data.length;
+    }
+
+    const req = https.request(
+      {
+        hostname: u.hostname,
+        path: `${u.pathname}${u.search}`,
+        method,
+        headers: reqHeaders,
       },
-    }, (res) => {
-      let chunks = Buffer.alloc(0);
-      res.on('data', c => { chunks = Buffer.concat([chunks, c]); });
-      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: chunks.toString('utf8') }));
-    });
+      (res) => {
+        let chunks = Buffer.alloc(0);
+        res.on('data', (c) => { chunks = Buffer.concat([chunks, c]); });
+        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: chunks.toString('utf8') }));
+      }
+    );
+
     req.on('error', reject);
-    req.setTimeout(20000, () => { req.destroy(); reject(new Error('Timeout (20s)')); });
-    req.write(data);
+    req.setTimeout(timeoutMs, () => { req.destroy(new Error(`Timeout (${timeoutMs}ms)`)); });
+    if (data) req.write(data);
     req.end();
   });
 }
 
-// GET, relayé via ZenRows, mêmes principes.
-function getJsonViaZenrows(targetUrl, headers = {}) {
-  return new Promise((resolve, reject) => {
-    const req = https.get(buildZenrowsUrl(targetUrl), { headers }, (res) => {
-      let chunks = Buffer.alloc(0);
-      res.on('data', c => { chunks = Buffer.concat([chunks, c]); });
-      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: chunks.toString('utf8') }));
+// Enveloppe `request` avec des retries (backoff exponentiel) sur les erreurs
+// réseau/timeouts et sur les codes typiques d'un souci temporaire côté Vinted
+// (429/502/503/504). On ne retente PAS ici les 401/403, gérés plus haut
+// dans la logique métier (renouvellement de session / cookies).
+async function requestWithRetry(method, targetUrl, opts = {}, maxRetries = 2) {
+  let lastErr;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await request(method, targetUrl, opts);
+      if ([429, 502, 503, 504].includes(res.status) && attempt < maxRetries) {
+        await sleep(400 * Math.pow(3, attempt));
+        continue;
+      }
+      return res;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < maxRetries) {
+        await sleep(400 * Math.pow(3, attempt));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
+}
+
+// ── Bootstrap de session ──────────────────────────────────────────────────────
+// Visite la page d'accueil pour obtenir un premier lot de cookies (anon_id,
+// datadome, etc.). `force=true` permet de forcer un renouvellement complet
+// si on soupçonne que les cookies en cache sont grillés.
+async function bootstrapCookies(force = false) {
+  if (!force && Object.keys(cookieJar).length) return cookieJar;
+
+  try {
+    const res = await requestWithRetry('GET', 'https://www.vinted.fr/', {
+      headers: {
+        'User-Agent': IOS_USER_AGENT,
+        'Accept': 'text/html,application/xhtml+xml',
+      },
+      timeoutMs: 15000,
     });
-    req.on('error', reject);
-    req.setTimeout(20000, () => { req.destroy(); reject(new Error('Timeout (20s)')); });
-  });
+    const fresh = parseSetCookieHeaders(res.headers['set-cookie']);
+    cookieJar = force ? fresh : { ...cookieJar, ...fresh };
+  } catch (err) {
+    console.error(`[vinted-bootstrap] échec de récupération des cookies initiaux: ${err.message}`);
+    // On continue quand même : certaines requêtes peuvent réussir sans cookie.
+  }
+
+  return cookieJar;
 }
 
 // ── Obtenir (ou rafraîchir) le token OAuth ───────────────────────────────────
 async function getOauthToken() {
+  await bootstrapCookies();
+
   const payload = { grant_type: 'password', client_id: 'ios', scope: 'public' };
 
   if (session && session.refresh_token) {
@@ -87,9 +141,16 @@ async function getOauthToken() {
     payload.refresh_token = session.refresh_token;
   }
 
-  const res = await postJsonViaZenrows('https://www.vinted.fr/oauth/token', payload, {
-    'User-Agent': IOS_USER_AGENT,
+  const res = await requestWithRetry('POST', 'https://www.vinted.fr/oauth/token', {
+    headers: {
+      'User-Agent': IOS_USER_AGENT,
+      'Accept': 'application/json',
+      'Cookie': cookieJarToHeader(cookieJar),
+    },
+    body: payload,
   });
+
+  Object.assign(cookieJar, parseSetCookieHeaders(res.headers['set-cookie']));
 
   if (res.status !== 200) {
     console.error(
@@ -104,9 +165,12 @@ async function getOauthToken() {
       at: new Date().toISOString(),
     };
 
-    // Si le refresh échoue, on repart sur un password grant propre
+    // Si le refresh échoue, on repart sur un password grant propre,
+    // avec des cookies fraîchement re-bootstrappés (le blocage vient
+    // parfois d'une session cookie expirée plutôt que du token lui-même).
     if (payload.grant_type === 'refresh_token') {
       session = null;
+      await bootstrapCookies(true);
       return getOauthToken();
     }
     throw new Error(`Échec de l'authentification OAuth (HTTP ${res.status})`);
@@ -127,9 +191,6 @@ async function getOauthToken() {
     throw new Error('Réponse OAuth non-JSON');
   }
 
-  // Succès : on peut effacer l'échec précédent (optionnel, garde l'historique sinon)
-  // lastOauthFailure = null;
-
   session = {
     access_token: content.access_token,
     refresh_token: content.refresh_token,
@@ -147,22 +208,27 @@ async function ensureSession() {
 }
 
 // ── Requête catalogue ────────────────────────────────────────────────────────
-async function fetchCatalog(params) {
+// `manualCookie` : cookie collé manuellement par l'utilisateur depuis son
+// navigateur (fallback UI côté front) — prioritaire sur le cookie jar interne
+// quand il est fourni, car il vient d'une vraie session validée par Datadome.
+async function fetchCatalog(params, manualCookie) {
   const s = await ensureSession();
-
   const url = `https://www.vinted.fr/api/v2/catalog/items?${params}`;
-  const headers = {
-    'Authorization': `Bearer ${s.access_token}`,
+
+  const buildHeaders = (accessToken) => ({
+    'Authorization': `Bearer ${accessToken}`,
     'User-Agent': IOS_USER_AGENT,
     'x-app-version': APP_VERSION,
     'x-device-model': DEVICE_MODEL,
     'short-bundle-version': APP_VERSION,
     'Accept': 'application/json',
-  };
+    'Cookie': manualCookie || cookieJarToHeader(cookieJar),
+  });
 
-  let res = await getJsonViaZenrows(url, headers);
+  let res = await requestWithRetry('GET', url, { headers: buildHeaders(s.access_token) });
+  Object.assign(cookieJar, parseSetCookieHeaders(res.headers['set-cookie']));
 
-  // Token expiré/invalide entre deux scans → on retente une seule fois après renouvellement
+  // Token expiré/invalide → on retente une seule fois après renouvellement
   if (res.status === 401) {
     console.error(
       `[vinted-catalog] HTTP 401 avec le token en cache — renouvellement puis retry\n` +
@@ -170,14 +236,23 @@ async function fetchCatalog(params) {
     );
     session = null;
     const s2 = await ensureSession();
-    res = await getJsonViaZenrows(url, { ...headers, 'Authorization': `Bearer ${s2.access_token}` });
-    if (res.status !== 200) {
-      console.error(
-        `[vinted-catalog] retry après renouvellement toujours en échec, HTTP ${res.status}\n` +
-        `  body (500 premiers car.): ${res.body.slice(0, 500)}`
-      );
-    }
-  } else if (res.status !== 200) {
+    res = await requestWithRetry('GET', url, { headers: buildHeaders(s2.access_token) });
+    Object.assign(cookieJar, parseSetCookieHeaders(res.headers['set-cookie']));
+  }
+
+  // 403/503 sans cookie manuel → probable challenge Datadome, on retente une
+  // fois avec des cookies fraîchement bootstrappés avant d'abandonner.
+  if ([403, 503].includes(res.status) && !manualCookie) {
+    console.error(
+      `[vinted-catalog] HTTP ${res.status} — nouveau bootstrap de cookies puis retry\n` +
+      `  body (500 premiers car.): ${res.body.slice(0, 500)}`
+    );
+    await bootstrapCookies(true);
+    res = await requestWithRetry('GET', url, { headers: buildHeaders(s.access_token) });
+    Object.assign(cookieJar, parseSetCookieHeaders(res.headers['set-cookie']));
+  }
+
+  if (res.status !== 200) {
     console.error(
       `[vinted-catalog] HTTP ${res.status}\n` +
       `  url: ${url}\n` +
@@ -192,8 +267,9 @@ async function fetchCatalog(params) {
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
 
-  const { search_text, price_from, price_to, per_page, order, debug } = req.query;
+  const { search_text, price_from, price_to, per_page, order, debug, cookie } = req.query;
   const isDebug = debug === '1' || debug === 'true';
+  const manualCookie = typeof cookie === 'string' && cookie.trim() ? cookie.trim() : null;
 
   const params = new URLSearchParams({
     search_text: search_text || '',
@@ -205,7 +281,7 @@ export default async function handler(req, res) {
   });
 
   try {
-    const result = await fetchCatalog(params);
+    const result = await fetchCatalog(params, manualCookie);
 
     if (result.status === 200) {
       try {
